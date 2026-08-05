@@ -64,6 +64,24 @@ public final class UsbPermissionHelper {
             toast(context, context.getString(R.string.usb_toast_no_host));
             return;
         }
+        // Root 免授权直连模式：不走系统授权，直接启动服务由 UsbCaptureService 走 chmod+fd 直连。
+        try {
+            ConfigManager __cfg = new ConfigManager(false);
+            __cfg.setSkipProviderReload(true);
+            __cfg.setContext(app);
+            __cfg.forceReload();
+            if (__cfg.getBoolean(ConfigManager.KEY_USB_ROOT_BYPASS, false)) {
+                log("Root 免授权直连模式：跳过系统授权，直接启动采集服务");
+                toast(context, "Root 直连模式，正在启动采集…");
+                UsbPermissionActivity.startCaptureService(app);
+                return;
+            }
+        } catch (Throwable __ignored) {
+        }
+        if (usbManager == null) {
+            toast(context, context.getString(R.string.usb_toast_no_host));
+            return;
+        }
 
         UsbDevice device = (preferred != null && isUvcDevice(preferred))
                 ? preferred
