@@ -14,7 +14,16 @@ import java.lang.reflect.Method;
 
 import io.github.zensu357.camswap.utils.LogUtil;
 
-/** Root 免授权直连器：nativeConnectFd(mNativePtr, fd)，绕过 UsbManager 授权。 */
+/**
+ * Root 免授权直连器：复现 {@code UVCCamera.open(UsbControlBlock)} 的核心调用
+ * {@code nativeConnect(mNativePtr, fd, quirks)}，绕过 UsbManager 授权。
+ *
+ * <p><b>注意（历史坑）：</b>herohan UVCAndroid 1.0.13 的 blob 里根本没有
+ * {@code nativeConnectFd} 这个方法（javap 反编译已核实），真正的私有 native 方法是
+ * {@code private native int nativeConnect(long, int, int)}。早前误改为反射
+ * {@code nativeConnectFd(long, int)} 会抛 {@link NoSuchMethodException}，被外层
+ * try-catch 吞掉后返回 null，表现为「root direct-connect failed」——本类已改回正确签名。
+ */
 public final class UsbRootConnector {
 
     private static final String TAG = "【CS】【usb】【root】";
@@ -58,8 +67,14 @@ public final class UsbRootConnector {
             long ptr = readNativePtr(camera);
             log("mNativePtr=" + ptr + " quirks=" + quirks);
             if (ptr == 0L) { log("mNativePtr 为 0"); camera.destroy(); pfd.close(); return null; }
-            long rc = invokeNativeConnectFd(camera, ptr, fd);
-            log("nativeConnectFd 返回=" + rc);
+            int rc = invokeNativeConnect(camera, ptr, fd, quirks);
+            log("nativeConnect 返回=" + rc + " (0=成功)");
+            if (rc != 0) {
+                log("nativeConnect 失败 rc=" + rc + "——放弃 root 直连（fd 可能被其它进程占用/设备不兼容）");
+                camera.destroy();
+                pfd.close();
+                return null;
+            }
             invokeUpdateSupportedFormats(camera);
             boolean sized = false;
             try {
@@ -88,11 +103,16 @@ public final class UsbRootConnector {
         return f.getLong(camera);
     }
 
-    private static long invokeNativeConnectFd(UVCCamera camera, long ptr, int fd) throws Exception {
-        Method m = UVCCamera.class.getDeclaredMethod("nativeConnectFd", long.class, int.class);
+    /**
+     * 反射调用 herohan UVCCamera 1.0.13 的私有 native 方法
+     * {@code private native int nativeConnect(long id, int fileDescriptor, int quirks)}。
+     * 这正是 {@code UVCCamera.open()} 内部真正执行的连接调用，返回 0 表示成功。
+     */
+    private static int invokeNativeConnect(UVCCamera camera, long ptr, int fd, int quirks) throws Exception {
+        Method m = UVCCamera.class.getDeclaredMethod("nativeConnect", long.class, int.class, int.class);
         m.setAccessible(true);
-        Object r = m.invoke(camera, ptr, fd);
-        return r instanceof Long ? (Long) r : 0L;
+        Object r = m.invoke(camera, ptr, fd, quirks);
+        return r instanceof Integer ? (Integer) r : -1;
     }
 
     private static void invokeUpdateSupportedFormats(UVCCamera camera) {
