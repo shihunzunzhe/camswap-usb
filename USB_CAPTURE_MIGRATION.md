@@ -126,3 +126,80 @@ UsbCaptureService                          Camera1/2 Hook
 ## 9. git
 - 分支 `main`，本功能已 commit（`git log` 顶部 feat: USB capture card...）。
 - 原始上游 remote 是 `zensu357/Android-CamSwap-OpenSource`。迁移后按需 `git remote set-url` 到你的仓库再 push。
+
+
+## 附录 A：RootShell.java 全文（若该文件在迁移中丢失，按此重建）
+
+```java
+package io.github.zensu357.camswap;
+
+import java.io.DataOutputStream;
+import io.github.zensu357.camswap.utils.LogUtil;
+
+/** 极简 root 命令执行器：用 su 放开 USB 设备节点权限，为免授权直连铺路。 */
+public final class RootShell {
+    private static final String TAG_PREFIX = "\u3010CS\u3011\u3010usb\u3011";
+    private RootShell() {}
+
+    public static String exec(String command) {
+        Process process = null;
+        try {
+            process = Runtime.getRuntime().exec("su");
+            DataOutputStream os = new DataOutputStream(process.getOutputStream());
+            os.writeBytes(command + "\n");
+            os.writeBytes("exit\n");
+            os.flush();
+            StringBuilder sb = new StringBuilder();
+            java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream()));
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line).append('\n');
+            int code = process.waitFor();
+            if (code != 0) { LogUtil.log(TAG_PREFIX + "root cmd rc=" + code + ": " + command); return null; }
+            return sb.toString();
+        } catch (Exception e) {
+            LogUtil.log(TAG_PREFIX + "root cmd fail(" + command + "): " + e);
+            return null;
+        } finally {
+            if (process != null) { try { process.destroy(); } catch (Exception ignored) {} }
+        }
+    }
+
+    public static boolean chmodUsbNode(String deviceNode) {
+        if (deviceNode == null || !deviceNode.startsWith("/dev/bus/usb/")) {
+            LogUtil.log(TAG_PREFIX + "bad usb node: " + deviceNode); return false;
+        }
+        String out = exec("chmod 666 " + deviceNode);
+        boolean ok = out != null;
+        LogUtil.log(TAG_PREFIX + "chmod " + deviceNode + " -> " + (ok ? "ok" : "fail"));
+        return ok;
+    }
+}
+```
+
+## 附录 B：自己编译的命令
+
+```bash
+# 1. 进项目并初始化 native 子模块（Dobby，供 native hook；缺了 CMake 会失败）
+cd Android-CamSwap-OpenSource
+git submodule update --init --recursive
+
+# 2. 指定 JDK17 与 Android SDK（按你机器实际路径改）
+export JAVA_HOME=/path/to/jdk-17
+export ANDROID_HOME=/path/to/Android/Sdk
+export ANDROID_SDK_ROOT=$ANDROID_HOME
+export PATH=$JAVA_HOME/bin:$PATH
+# 或在项目根建 local.properties: sdk.dir=/path/to/Android/Sdk
+# 首次需要的组件: platform-tools, platforms;android-36, build-tools;35.0.0,
+#                ndk;25.1.8937393, cmake;3.22.1  （sdkmanager 安装）
+
+# 3. 编译（三选一）
+./gradlew :app:assembleRelease     # release，按 ABI 分包
+./gradlew :app:assembleDebug       # debug，日志/调试友好
+./gradlew :app:testDebugUnitTest   # 跑 20 个 JVM 单测
+
+# 产物: app/build/outputs/apk/release(或debug)/app-arm64-v8a-*.apk（手机装这个）
+# 注意: ./gradlew lint 会因 Compose lint 与 Kotlin2.1 不兼容崩溃(与本功能无关)，
+#       如需 lint 在 app/build.gradle 加:
+#   android { lint { disable 'MutableCollectionMutableState','AutoboxingStateCreation' } }
+```
