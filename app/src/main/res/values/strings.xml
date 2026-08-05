@@ -198,4 +198,8 @@
 
     <!-- Toast / Migration -->
     <string name="config_migrated">配置已自动迁移</string>
+    <string name="usb_toast_denied">授权被系统直接拒绝。请拔掉采集卡重新插入，在系统提示中勾"默认打开"并确定。</string>
+    <string name="usb_toast_no_result">授权请求已发出但系统无响应。请拔插采集卡，用插入时的系统提示授权。</string>
+    <string name="settings_usb_root_bypass">Root 免授权直连（推荐）</string>
+    <string name="settings_usb_root_bypass_desc">用 root 直接打开设备节点，绕过 Android USB 授权，无需弹窗。需已授予 CamSwap root 权限。</string>
 </resources>
