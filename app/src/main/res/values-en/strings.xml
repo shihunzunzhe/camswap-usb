@@ -198,4 +198,8 @@
 
     <!-- Toast / Migration -->
     <string name="config_migrated">Configuration has been migrated</string>
+    <string name="usb_toast_denied">Permission denied by system. Unplug and replug the card, tap Allow (use by default).</string>
+    <string name="usb_toast_no_result">Permission request sent but no response. Replug the card and authorize on attach.</string>
+    <string name="settings_usb_root_bypass">Root direct connect (recommended)</string>
+    <string name="settings_usb_root_bypass_desc">Uses root to open the device node directly, bypassing Android USB permission. Requires root.</string>
 </resources>
