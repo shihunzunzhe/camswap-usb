@@ -9,6 +9,7 @@ import android.view.Surface;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.VideoSize;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.datasource.rtmp.RtmpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
@@ -91,13 +92,18 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
                     .setLooper(looper)
                     .build();
 
+            LogUtil.log("【CS】ExoPlayer outputSurface="
+                    + (outputSurface == null ? "null" : ("valid=" + outputSurface.isValid())));
             if (outputSurface != null) {
                 player.setVideoSurface(outputSurface);
+            } else {
+                LogUtil.log("【CS】ExoPlayer 警告：输出 Surface 为 null，画面无处渲染（必然黑屏）");
             }
 
             player.addListener(new Player.Listener() {
                 @Override
                 public void onPlaybackStateChanged(int playbackState) {
+                    LogUtil.log("【CS】ExoPlayer 状态: " + stateName(playbackState));
                     if (playbackState == Player.STATE_READY) {
                         reconnectAttempts = 0;
                         if (listener != null) listener.onReady();
@@ -107,9 +113,40 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
                 }
 
                 @Override
+                public void onVideoSizeChanged(VideoSize videoSize) {
+                    // 收到有效视频尺寸 = 解码器已拿到视频轨并开始解码；仍黑屏则问题在渲染/Surface
+                    LogUtil.log("【CS】ExoPlayer 视频尺寸: " + videoSize.width + "x" + videoSize.height
+                            + "（收到=解码器已出画，若仍黑屏是渲染/Surface 问题）");
+                }
+
+                @Override
+                public void onRenderedFirstFrame() {
+                    // 首帧已渲染到 Surface —— 到这一步说明画面已经画到 GL 输入面，若目标 App 仍黑屏就是
+                    // GL→目标 Surface 这一段（旋转/尺寸/OES）的问题，而非流本身。
+                    LogUtil.log("【CS】ExoPlayer 首帧已渲染到输出 Surface ✅（流→GL 链路已通）");
+                }
+
+                @Override
+                public void onTracksChanged(androidx.media3.common.Tracks tracks) {
+                    boolean hasVideo = false, hasAudio = false;
+                    try {
+                        for (androidx.media3.common.Tracks.Group g : tracks.getGroups()) {
+                            int t = g.getType();
+                            if (t == androidx.media3.common.C.TRACK_TYPE_VIDEO) hasVideo = true;
+                            if (t == androidx.media3.common.C.TRACK_TYPE_AUDIO) hasAudio = true;
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                    LogUtil.log("【CS】ExoPlayer 轨道: 视频=" + hasVideo + " 音频=" + hasAudio
+                            + (hasVideo ? "" : "（无视频轨！只有音频/无轨——确认该流含视频且编码可被 MediaCodec 解）"));
+                }
+
+                @Override
                 public void onPlayerError(PlaybackException error) {
+                    String friendly = classifyError(error);
                     LogUtil.log("【CS】ExoPlayer 播放错误: " + error.getMessage()
-                            + " code=" + error.errorCode);
+                            + " code=" + error.errorCode + " (" + error.getErrorCodeName() + ") → " + friendly);
+                    toast("流播放失败: " + friendly);
                     if (listener != null) {
                         listener.onError(error.getMessage(), error);
                         listener.onDisconnected();
@@ -120,12 +157,17 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
                 }
             });
 
+            // 明文流量 / INTERNET 权限预检（ExoPlayer 跑在被 Hook 的目标 App 进程里，受其网络策略约束，
+            // 这正是「VLC 能播、模块里黑屏」的头号原因）
+            warnIfNetworkPolicyBlocks(appContext, source.streamUrl);
+
             MediaSource mediaSource = buildMediaSource(source);
             player.setMediaSource(mediaSource);
             player.prepare();
             player.play();
 
-            LogUtil.log("【CS】ExoPlayer 开始播放: " + source.streamUrl);
+            LogUtil.log("【CS】ExoPlayer 开始播放: " + source.streamUrl
+                    + "（transport=" + source.transportHint + " autoReconnect=" + source.autoReconnect + "）");
         } catch (Exception e) {
             LogUtil.log("【CS】ExoPlayer 初始化失败: " + e);
             if (listener != null) {
@@ -177,6 +219,77 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
         // Fallback: ProgressiveMediaSource (plain HTTP video)
         return new ProgressiveMediaSource.Factory(httpFactory)
                 .createMediaSource(MediaItem.fromUri(uri));
+    }
+
+    private static String stateName(int s) {
+        switch (s) {
+            case Player.STATE_IDLE: return "IDLE";
+            case Player.STATE_BUFFERING: return "BUFFERING(缓冲中)";
+            case Player.STATE_READY: return "READY(就绪播放)";
+            case Player.STATE_ENDED: return "ENDED(结束)";
+            default: return "未知(" + s + ")";
+        }
+    }
+
+    /** 把 ExoPlayer 错误码翻译成用户能看懂、能据此排查的原因。 */
+    private static String classifyError(PlaybackException e) {
+        int c = e.errorCode;
+        if (c == PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED) {
+            return "目标 App 禁止明文流量(http/rtmp)。请改用 https / rtsp(tcp)，"
+                    + "或该 App 需在 manifest 允许 cleartext";
+        }
+        if (c == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
+                || c == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT) {
+            return "网络连不上。多为【目标 App 缺 INTERNET 权限】(VLC 有该权限所以能播)，"
+                    + "或地址/端口不通、需同一局域网";
+        }
+        if (c == PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE
+                || c == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) {
+            return "服务器返回异常(内容类型/状态码)，确认地址正确且流在推";
+        }
+        if (c == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
+                || c == PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED) {
+            return "容器格式不支持/解析失败";
+        }
+        if (c == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
+                || c == PlaybackException.ERROR_CODE_DECODING_FAILED) {
+            return "解码器初始化/解码失败，编码可能不被本机 MediaCodec 支持";
+        }
+        return "错误码 " + e.getErrorCodeName();
+    }
+
+    /**
+     * 预检目标进程的网络策略：若地址是明文协议(http/rtmp/rtsp)而目标 App 又禁止明文流量，
+     * ExoPlayer 会静默失败或报 CLEARTEXT_NOT_PERMITTED——提前弹窗提示，省去用户猜。
+     */
+    private static void warnIfNetworkPolicyBlocks(android.content.Context ctx, String url) {
+        if (url == null) return;
+        String u = url.toLowerCase(java.util.Locale.ROOT);
+        boolean cleartext = u.startsWith("http://") || u.startsWith("rtmp://")
+                || u.startsWith("rtsp://") || u.startsWith("rtp://");
+        if (!cleartext) return;
+        try {
+            android.security.NetworkSecurityPolicy policy =
+                    android.security.NetworkSecurityPolicy.getInstance();
+            boolean permitted = policy.isCleartextTrafficPermitted();
+            LogUtil.log("【CS】明文流量检查: 目标 App 允许明文=" + permitted + " url=" + url);
+            if (!permitted) {
+                String msg = "目标 App 禁止明文流量，" + u.substring(0, Math.min(7, u.length()))
+                        + "… 可能被拦截。建议改用 https / rtsp(tcp)";
+                LogUtil.log("【CS】⚠ " + msg);
+                toast(msg);
+            }
+        } catch (Throwable t) {
+            LogUtil.log("【CS】明文流量检查异常(可忽略): " + t);
+        }
+    }
+
+    private static void toast(String message) {
+        try {
+            HookMain.showToast("【CamSwap】" + message);
+        } catch (Throwable ignored) {
+            // Hook 环境不可用时忽略，日志里已有同样信息
+        }
     }
 
     private void scheduleReconnect() {

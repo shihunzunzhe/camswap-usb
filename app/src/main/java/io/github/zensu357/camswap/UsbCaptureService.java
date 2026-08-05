@@ -25,6 +25,7 @@ import android.view.Surface;
 
 import com.serenegiant.opengl.renderer.RendererHolder;
 import com.serenegiant.opengl.renderer.RendererHolderCallback;
+import com.serenegiant.usb.IFrameCallback;
 import com.serenegiant.usb.Size;
 import com.serenegiant.usb.USBMonitor;
 import com.serenegiant.usb.UVCCamera;
@@ -116,6 +117,12 @@ public class UsbCaptureService extends Service {
     /** 上次发起授权请求的时刻，用于给 in-flight 状态兜底超时 */
     private volatile long permissionRequestAtMs;
     private volatile long lastFrameAtMs;
+    /** 宿主 GL 主 Surface 累计收到的帧数（用于诊断：宿主是否真的拿到画面） */
+    private volatile long hostFrameCount;
+    /** libuvc native 回调累计帧数（用于诊断：设备/fd 是否真的在出帧，区分「无帧」与「有帧但没渲染」） */
+    private volatile long nativeFrameCount;
+    /** 本轮开流是否已打过首帧日志，避免刷屏 */
+    private volatile boolean firstFrameLogged;
     private int reconnectAttempt;
     /** 连续被拒绝授权的次数，仅用于提示，不再驱动自动重试 */
     private int permissionDeniedCount;
@@ -746,12 +753,20 @@ public class UsbCaptureService extends Service {
         UVCCamera camera = conn.camera;
         RendererHolder holder = null;
         try {
+            log("root 直连已连接: isOpened=" + safeIsOpened(camera));
             // 2) 分辨率协商：必须从设备真实上报的支持列表里挑（与标准路径 startUvc 完全一致）。
             //    早前 root 路径把配置里的尺寸 + FRAME_FORMAT_MJPEG(=1，本应是 UVC_VS_FRAME_MJPEG=7)
             //    硬塞给 native，设备不支持该组合 → 开了预览却零帧 → 无限重连黑屏。
-            Size chosen = pickBestSize(camera.getSupportedSizeList(), usbConfig);
+            List<Size> supported = null;
+            try { supported = camera.getSupportedSizeList(); } catch (Throwable t) { log("getSupportedSizeList 异常: " + t); }
+            logSupportedSizes("root", supported);
+            Size chosen = pickBestSize(supported, usbConfig);
             if (chosen == null) {
                 chosen = camera.getSupportedSizeOne();
+                log("pickBestSize 无匹配，getSupportedSizeOne=" + describeSize(chosen));
+            } else {
+                log("root 选定分辨率: " + describeSize(chosen)
+                        + "（配置期望 " + usbConfig.width + "x" + usbConfig.height + "@" + usbConfig.fps + "）");
             }
             if (chosen != null) {
                 try {
@@ -789,9 +804,19 @@ public class UsbCaptureService extends Service {
                 return;
             }
 
-            // 4) 挂 Surface 并开预览。
+            // 4) 挂 Surface 并开预览。开流前清零帧计数，装上 native 帧回调用于诊断+看门狗兜底。
+            hostFrameCount = 0;
+            nativeFrameCount = 0;
+            firstFrameLogged = false;
             camera.setPreviewDisplay(primary);
+            try {
+                camera.setFrameCallback(usbFrameCallback, UVCCamera.PIXEL_FORMAT_RAW);
+                log("已装 native 帧回调（PIXEL_FORMAT_RAW），用于确认设备是否真在出帧");
+            } catch (Throwable t) {
+                log("setFrameCallback 失败（不影响预览，仅少一路诊断）: " + t);
+            }
             camera.startPreview();
+            log("root startPreview 已调用，等待首帧… 若 6s 内无帧看门狗会打印 native/宿主帧数");
 
             rootConnection = conn;
             uvcCamera = camera;
@@ -1028,7 +1053,15 @@ public class UsbCaptureService extends Service {
                 return;
             }
 
+            hostFrameCount = 0;
+            nativeFrameCount = 0;
+            firstFrameLogged = false;
             camera.setPreviewDisplay(primary);
+            try {
+                camera.setFrameCallback(usbFrameCallback, UVCCamera.PIXEL_FORMAT_RAW);
+            } catch (Throwable t) {
+                log("setFrameCallback 失败（不影响预览）: " + t);
+            }
             camera.startPreview();
 
             uvcCamera = camera;
@@ -1133,6 +1166,36 @@ public class UsbCaptureService extends Service {
         if (camera != null || holder != null) {
             log("UVC 已停止开流");
         }
+    }
+
+    // ---- 诊断辅助 ----
+
+    private static boolean safeIsOpened(UVCCamera camera) {
+        try { return camera != null && camera.isOpened(); } catch (Throwable t) { return false; }
+    }
+
+    private static String describeSize(Size s) {
+        if (s == null) return "null";
+        String fmt = s.type == UVCCamera.UVC_VS_FRAME_MJPEG ? "MJPEG" : ("type" + s.type);
+        return s.width + "x" + s.height + "@" + s.fps + "(" + fmt + ")";
+    }
+
+    /** 把设备上报的支持分辨率列表打进日志——排查「设备到底支持哪些格式」的第一手依据。 */
+    private void logSupportedSizes(String tag, List<Size> sizes) {
+        if (sizes == null || sizes.isEmpty()) {
+            log("[" + tag + "] 设备未上报任何支持分辨率（getSupportedSizeList 为空——"
+                    + "多为 updateSupportedFormats 未生效或设备非标准 UVC）");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("[").append(tag).append("] 设备支持 ").append(sizes.size()).append(" 种分辨率: ");
+        int n = 0;
+        for (Size s : sizes) {
+            if (n++ > 0) sb.append(", ");
+            sb.append(describeSize(s));
+            if (n >= 12) { sb.append(" …"); break; }
+        }
+        log(sb.toString());
     }
 
     /**
@@ -1253,7 +1316,14 @@ public class UsbCaptureService extends Service {
             if (state == STATE_STREAMING && uvcCamera != null) {
                 long idle = SystemClock.elapsedRealtime() - lastFrameAtMs;
                 if (idle > FRAME_WATCHDOG_TIMEOUT_MS) {
-                    log("看门狗：已 " + idle + "ms 无新帧，触发重连");
+                    // 详细诊断：把 native 帧数 / 宿主 GL 帧数 一并打出来，方便区分故障阶段：
+                    //   nativeFrameCount==0            → 设备/libuvc/fd 根本没出帧（USB 源问题）
+                    //   nativeFrameCount>0 且 host==0  → native 出帧了但没渲染到宿主 GL（预览显示/GL 问题）
+                    //   host>0                          → 宿主有画面，问题在跨进程分发到目标 App
+                    log("看门狗：已 " + idle + "ms 无新帧 → 触发重连"
+                            + " [native帧=" + nativeFrameCount + " 宿主GL帧=" + hostFrameCount
+                            + " 分辨率=" + activeWidth + "x" + activeHeight + "@" + activeFps
+                            + " root直连=" + (rootConnection != null) + "]");
                     stopUvc();
                     reconnectAttempt = 0;
                     setState(STATE_RECONNECTING);
@@ -1275,11 +1345,36 @@ public class UsbCaptureService extends Service {
         @Override
         public void onFrameAvailable() {
             lastFrameAtMs = SystemClock.elapsedRealtime();
+            long n = ++hostFrameCount;
+            if (n == 1) {
+                log("宿主 GL 主 Surface 收到首帧（画面已到达宿主）"
+                        + " [native帧=" + nativeFrameCount + "]");
+            }
         }
 
         @Override
         public void onPrimarySurfaceDestroy() {
             log("RendererHolder 主 Surface 已销毁");
+        }
+    };
+
+    /**
+     * libuvc native 帧回调：仅用于诊断与看门狗兜底——证明设备/fd 是否真的在出帧。
+     * 不消费 buffer 内容（PIXEL_FORMAT_RAW，开销最小）。同时刷新 lastFrameAtMs，
+     * 这样即便宿主 GL 的 SurfaceTexture 回调因故不触发，只要 native 有帧看门狗就不会误重连。
+     */
+    private final IFrameCallback usbFrameCallback = new IFrameCallback() {
+        @Override
+        public void onFrame(java.nio.ByteBuffer frame) {
+            lastFrameAtMs = SystemClock.elapsedRealtime();
+            long n = ++nativeFrameCount;
+            if (n == 1) {
+                int sz = frame != null ? frame.remaining() : -1;
+                log("libuvc native 收到首帧（设备/fd 正常出帧）大小=" + sz + " 字节");
+            } else if (n % 150 == 0) {
+                // 每约 5 秒（30fps）打一次心跳，确认持续出帧
+                log("libuvc native 持续出帧: 累计 " + n + " 帧, 宿主GL " + hostFrameCount + " 帧");
+            }
         }
     };
 
