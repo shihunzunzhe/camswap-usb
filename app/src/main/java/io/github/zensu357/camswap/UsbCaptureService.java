@@ -733,26 +733,92 @@ public class UsbCaptureService extends Service {
 
     private void startUvcViaRoot(UsbDevice device) {
         if (released || uvcCamera != null || rootConnection != null) return;
-        int width = usbConfig.width, height = usbConfig.height, fps = usbConfig.fps;
-        RendererHolder holder;
-        try { holder = new RendererHolder(width, height, rendererHolderCallback); }
-        catch (Throwable t) { log("RendererHolder fail: " + t); setError("GL init fail"); return; }
-        Surface primary = holder.getPrimarySurface();
-        if (primary == null || !primary.isValid()) { holder.release(); setError("GL init fail"); return; }
-        UsbRootConnector.Connection conn = UsbRootConnector.openAndStart(device, width, height, fps, primary);
+
+        // 1) 先只建立连接（root 放开节点 + 直接 fd + nativeConnect + updateSupportedFormats），
+        //    此时还没设分辨率、没开预览。
+        UsbRootConnector.Connection conn = UsbRootConnector.connect(device);
         if (conn == null) {
-            holder.release();
             setError("Root direct-connect failed (grant root; see log tag root)");
             if (usbConfig.autoReconnect) scheduleReconnect();
             return;
         }
-        rootConnection = conn; uvcCamera = conn.camera; rendererHolder = holder;
-        activeDevice = device; activeDeviceName = device.getDeviceName();
-        activeWidth = width; activeHeight = height; activeFps = fps;
-        lastFrameAtMs = SystemClock.elapsedRealtime(); reconnectAttempt = 0;
-        markAllSlavesDetached(); attachAllSlaves(); setState(STATE_STREAMING);
-        log("root direct-connect streaming: " + describe(device) + " " + width + "x" + height + "@" + fps);
-        mainHandler.post(this::startForegroundSafely); updateNotification();
+
+        UVCCamera camera = conn.camera;
+        RendererHolder holder = null;
+        try {
+            // 2) 分辨率协商：必须从设备真实上报的支持列表里挑（与标准路径 startUvc 完全一致）。
+            //    早前 root 路径把配置里的尺寸 + FRAME_FORMAT_MJPEG(=1，本应是 UVC_VS_FRAME_MJPEG=7)
+            //    硬塞给 native，设备不支持该组合 → 开了预览却零帧 → 无限重连黑屏。
+            Size chosen = pickBestSize(camera.getSupportedSizeList(), usbConfig);
+            if (chosen == null) {
+                chosen = camera.getSupportedSizeOne();
+            }
+            if (chosen != null) {
+                try {
+                    camera.setPreviewSize(chosen);
+                } catch (Throwable t) {
+                    log("root 设置分辨率 " + chosen.width + "x" + chosen.height + " 失败，沿用默认: " + t);
+                }
+            } else {
+                log("设备未上报支持分辨率，回退 "
+                        + UVCCamera.DEFAULT_PREVIEW_WIDTH + "x" + UVCCamera.DEFAULT_PREVIEW_HEIGHT
+                        + "（type=UVC_VS_FRAME_MJPEG）");
+                try {
+                    camera.setPreviewSize(new Size(UVCCamera.UVC_VS_FRAME_MJPEG,
+                            UVCCamera.DEFAULT_PREVIEW_WIDTH, UVCCamera.DEFAULT_PREVIEW_HEIGHT,
+                            UVCCamera.DEFAULT_PREVIEW_FPS, new ArrayList<Integer>()));
+                } catch (Throwable ignored) {
+                    // 连默认值都设不上，仅记日志；startPreview 仍会用 native 内部默认尝试
+                }
+            }
+
+            // 3) 用协商后的真实尺寸建 GL 渲染器（尺寸不匹配会让跨进程 SurfaceTexture 拿到错误缓冲区）。
+            Size actual = camera.getPreviewSize();
+            int width = actual != null && actual.width > 0 ? actual.width : usbConfig.width;
+            int height = actual != null && actual.height > 0 ? actual.height : usbConfig.height;
+            int fps = actual != null && actual.fps > 0 ? actual.fps : usbConfig.fps;
+
+            holder = new RendererHolder(width, height, rendererHolderCallback);
+            Surface primary = holder.getPrimarySurface();
+            if (primary == null || !primary.isValid()) {
+                log("RendererHolder 主 Surface 无效，放弃 root 开流");
+                holder.release();
+                conn.release();
+                setError("GL 渲染器初始化失败");
+                if (usbConfig.autoReconnect) scheduleReconnect();
+                return;
+            }
+
+            // 4) 挂 Surface 并开预览。
+            camera.setPreviewDisplay(primary);
+            camera.startPreview();
+
+            rootConnection = conn;
+            uvcCamera = camera;
+            rendererHolder = holder;
+            activeDevice = device;
+            activeDeviceName = device.getDeviceName();
+            activeWidth = width;
+            activeHeight = height;
+            activeFps = fps;
+            lastFrameAtMs = SystemClock.elapsedRealtime();
+            reconnectAttempt = 0;
+            permissionDeniedCount = 0;
+            markAllSlavesDetached();
+            attachAllSlaves();
+            setState(STATE_STREAMING);
+            log("root direct-connect streaming: " + describe(device) + " " + width + "x" + height + "@" + fps);
+            mainHandler.post(this::startForegroundSafely);
+            updateNotification();
+        } catch (Throwable t) {
+            log("root 开流异常: " + android.util.Log.getStackTraceString(t));
+            if (holder != null) {
+                try { holder.release(); } catch (Throwable ignored) {}
+            }
+            try { conn.release(); } catch (Throwable ignored) {}
+            setError("root 开流异常: " + t);
+            if (usbConfig.autoReconnect) scheduleReconnect();
+        }
     }
 
     private void requestPermissionOrOpen(UsbDevice device) {

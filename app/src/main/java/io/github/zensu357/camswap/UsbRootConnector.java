@@ -2,9 +2,7 @@ package io.github.zensu357.camswap;
 
 import android.hardware.usb.UsbDevice;
 import android.os.ParcelFileDescriptor;
-import android.view.Surface;
 
-import com.serenegiant.usb.Size;
 import com.serenegiant.usb.UVCCamera;
 import com.serenegiant.usb.UVCParam;
 
@@ -41,11 +39,22 @@ public final class UsbRootConnector {
 
     private UsbRootConnector() {}
 
-    public static Connection openAndStart(UsbDevice device, int width, int height, int fps, Surface outputSurface) {
-        if (device == null || outputSurface == null) { log("参数为空"); return null; }
+    /**
+     * 仅完成「连接」：root 放开设备节点 → 直接打开 fd → {@code nativeConnect} →
+     * {@code updateSupportedFormats}。返回一个已连接、但<b>尚未设置分辨率、尚未开预览</b>的
+     * {@link Connection}。
+     *
+     * <p>分辨率协商（必须从 {@link UVCCamera#getSupportedSizeList()} 里挑设备真实支持的一档）
+     * 与开预览由调用方（{@code UsbCaptureService.startUvcViaRoot}）负责，逻辑与标准授权路径
+     * {@code startUvc} 完全一致——早前 root 路径把配置里的 720p 硬塞给 native、且把
+     * {@code FRAME_FORMAT_MJPEG(=1)} 误当成 {@code Size.type}（native 需要 {@code UVC_VS_FRAME_MJPEG=7}），
+     * 导致 native 开了预览却一帧都收不到，触发无限「开流→无帧看门狗→重连」黑屏循环。
+     */
+    public static Connection connect(UsbDevice device) {
+        if (device == null) { log("参数为空"); return null; }
         String node = device.getDeviceName();
         int appUid = android.os.Process.myUid();
-        log("尝试 root 直连: node=" + node + " appUid=" + appUid + " 期望 " + width + "x" + height + "@" + fps);
+        log("尝试 root 直连: node=" + node + " appUid=" + appUid);
         if (!RootShell.prepareUsbNode(node, appUid)) {
             log("prepareUsbNode 失败——root 未授权 / 节点不可写。请在 Magisk 授予 CamSwap root。");
             return null;
@@ -75,19 +84,9 @@ public final class UsbRootConnector {
                 pfd.close();
                 return null;
             }
+            // 刷新设备上报的支持格式，供调用方 getSupportedSizeList() 挑选真实可用分辨率
             invokeUpdateSupportedFormats(camera);
-            boolean sized = false;
-            try {
-                camera.setPreviewSize(new Size(UVCCamera.FRAME_FORMAT_MJPEG, width, height, fps, new java.util.ArrayList<Integer>()));
-                sized = true;
-            } catch (Throwable t) {
-                log("MJPEG " + width + "x" + height + "@" + fps + " 失败: " + t);
-                try { camera.setPreviewSize(width, height); sized = true; } catch (Throwable t2) { log("setPreviewSize(w,h) 失败: " + t2); }
-            }
-            log("setPreviewSize ok=" + sized);
-            camera.setPreviewDisplay(outputSurface);
-            camera.startPreview();
-            log("root 直连开流成功: " + node);
+            log("root 直连连接成功（未设分辨率/未开预览）: " + node);
             return new Connection(camera, pfd);
         } catch (Throwable t) {
             log("root 直连异常: " + android.util.Log.getStackTraceString(t));
