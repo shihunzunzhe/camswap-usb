@@ -28,8 +28,8 @@ public final class HookGuards {
         if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false)) {
             return true;
         }
-        // Stream mode: delegate to MediaSourceDescriptor-based check
-        if (VideoManager.isStreamMode()) {
+        // Stream / USB capture mode: delegate to MediaSourceDescriptor-based check
+        if (VideoManager.isStreamMode() || VideoManager.isUsbCaptureMode()) {
             return shouldBypass(packageName, VideoManager.getCurrentMediaSource());
         }
         return shouldBypassMissingVideo(packageName, videoFile);
@@ -46,6 +46,11 @@ public final class HookGuards {
         if (source == null || !source.isValid()) {
             logMissingMediaSource(packageName);
             return true;
+        }
+        // USB capture mode: 设备在线与否由宿主服务负责重连，Hook 侧一律放行，
+        // 否则采集卡短暂掉线就会导致目标应用回落到真实摄像头。
+        if (source.isUsbCapture()) {
+            return false;
         }
         // Local mode: check file existence
         if (!source.isStream()) {

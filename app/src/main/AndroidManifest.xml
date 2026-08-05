@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <application
         android:name=".App"
@@ -23,14 +24,49 @@
             </intent-filter>
         </activity>
 
-        <service android:name=".NotificationService" 
+        <!--
+            USB 采集卡插入入口：无界面 Activity，仅用于向系统申请"始终允许访问该设备"，
+            并顺带拉起 UsbCaptureService。避免把 USB_DEVICE_ATTACHED 挂到 MainActivity 上
+            导致插卡就弹出主界面。
+        -->
+        <!--
+            android:noHistory 已移除：系统 USB 授权对话框覆盖上来时本 Activity 会 onPause，
+            noHistory 会在此时把它销毁，导致收不到授权结果广播。改由结果回调里主动 finish。
+            launchMode=singleTop：避免用户反复点击 / 反复插拔时叠出多个实例。
+        -->
+        <activity
+            android:name=".UsbPermissionActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_device_filter" />
+        </activity>
+
+        <service android:name=".NotificationService"
                  android:exported="false"
                  android:foregroundServiceType="mediaPlayback"/>
 
         <service
             android:name=".OverlayControlService"
             android:exported="false" />
-        
+
+        <!--
+            USB 采集卡服务：必须 exported，供被 Hook 的目标应用进程跨进程 bindService。
+            调用方合法性由 UsbCaptureService.enforceCaller() 依据 target_packages 配置校验。
+        -->
+        <service
+            android:name=".UsbCaptureService"
+            android:exported="true"
+            android:foregroundServiceType="connectedDevice"
+            tools:ignore="ForegroundServicePermission" />
+
         <provider
             android:name=".VideoProvider"
             android:authorities="io.github.zensu357.camswap.provider"
@@ -53,8 +89,30 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+        UVCAndroid 的 AAR 会合并进 CAMERA / RECORD_AUDIO 权限（它自带拍照录像能力），
+        本模块只用取流，不需要这两个权限，显式移除以免扩大权限面。
+    -->
+    <uses-permission
+        android:name="android.permission.CAMERA"
+        tools:ignore="PermissionImpliesUnsupportedChromeOsHardware"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.RECORD_AUDIO"
+        tools:node="remove" />
+
+    <!--
+        AAR 声明的 usb.host 默认 required=true，会让无 USB Host 的设备无法安装；
+        这里强制改为可选，采集卡功能在不支持的设备上自动降级。
+    -->
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="false"
+        tools:replace="android:required" />
 
 </manifest>

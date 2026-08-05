@@ -10,6 +10,7 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.datasource.rtmp.RtmpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.dash.DashMediaSource;
 import androidx.media3.exoplayer.hls.HlsMediaSource;
@@ -148,15 +149,13 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
         }
 
         if ("rtmp".equalsIgnoreCase(scheme)) {
-            // RTMP: requires media3-exoplayer-rtmp extension
+            // Media3 的 RTMP 是 DataSource，配合 ProgressiveMediaSource 使用
             try {
-                Class<?> rtmpClass = Class.forName("androidx.media3.exoplayer.rtmp.RtmpMediaSource$Factory");
-                Object rtmpFactory = rtmpClass.getDeclaredConstructor().newInstance();
-                java.lang.reflect.Method createMethod = rtmpClass.getMethod(
-                        "createMediaSource", MediaItem.class);
-                return (MediaSource) createMethod.invoke(rtmpFactory, MediaItem.fromUri(uri));
-            } catch (Exception e) {
-                LogUtil.log("【CS】RTMP MediaSource 创建失败，降级为 Progressive: " + e);
+                return new ProgressiveMediaSource.Factory(new RtmpDataSource.Factory())
+                        .createMediaSource(MediaItem.fromUri(uri));
+            } catch (Throwable t) {
+                LogUtil.log("【CS】RTMP DataSource 不可用: " + t);
+                throw new IllegalStateException("RTMP 不可用，请确认已打包 media3-datasource-rtmp", t);
             }
         }
 
@@ -183,8 +182,9 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
     private void scheduleReconnect() {
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
             LogUtil.log("【CS】ExoPlayer 重连次数已达上限 (" + MAX_RECONNECT_ATTEMPTS + ")，停止重连");
-            if (currentSource != null && currentSource.enableLocalFallback && listener != null) {
-                listener.onError("Max reconnect attempts reached, consider local fallback", null);
+            if (listener != null) {
+                // 由 MediaPlayerManager 决定是否真正切回本地（取决于 enableLocalFallback 配置）
+                listener.onPermanentFailure("重连 " + MAX_RECONNECT_ATTEMPTS + " 次仍失败");
             }
             return;
         }

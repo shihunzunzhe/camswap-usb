@@ -49,6 +49,10 @@ public final class MediaPlayerManager {
 
     // ---- Stream mode: single shared ExoPlayerBackend ----
     private SurfacePlayerBackend streamBackend;
+    /** Camera1 流模式使用独立的 backend（Camera1 与 Camera2 不会同时活跃） */
+    private SurfacePlayerBackend c1StreamBackend;
+    /** 已经因流不可用切到本地兜底，避免反复来回切 */
+    private volatile boolean streamFellBackToLocal;
 
     /** Set current package name (future per-app video). */
     public void setPackageName(String packageName) {
@@ -72,6 +76,11 @@ public final class MediaPlayerManager {
         return VideoManager.isStreamMode();
     }
 
+    /** Whether we are currently in USB capture card (UVC) mode. */
+    boolean isUsbCaptureMode() {
+        return VideoManager.isUsbCaptureMode();
+    }
+
     // =====================================================================
     // Camera2 player initialization
     // =====================================================================
@@ -85,8 +94,23 @@ public final class MediaPlayerManager {
             Surface previewSurface, Surface previewSurface1) {
 
         MediaSourceDescriptor source = getMediaSource();
+        streamFellBackToLocal = false;
 
-        if (source.isStream()) {
+        if (source.isUsbCapture()) {
+            // USB 采集卡模式：本地只建 GL 渲染器，画面由宿主 UsbCaptureService 跨进程直推
+            releaseStreamBackend();
+            if (CameraHandlerPatch.attachCamera2(this, readerSurface, readerSurface1,
+                    previewSurface, previewSurface1)) {
+                lastC2ReaderSurface = readerSurface;
+                lastC2ReaderSurface1 = readerSurface1;
+                lastC2PreviewSurface = previewSurface;
+                lastC2PreviewSurface1 = previewSurface1;
+                return;
+            }
+            LogUtil.log("【CS】【usb】Camera2 接管失败，回退到本地视频模式");
+            initCamera2PlayersLocal(readerSurface, readerSurface1,
+                    previewSurface, previewSurface1);
+        } else if (source.isStream()) {
             initCamera2PlayersStream(readerSurface, readerSurface1,
                     previewSurface, previewSurface1, source);
         } else {
@@ -217,11 +241,204 @@ public final class MediaPlayerManager {
                 public void onCompletion() {
                     LogUtil.log("【CS】流播放完成");
                 }
+
+                @Override
+                public void onPermanentFailure(String message) {
+                    LogUtil.log("【CS】流已彻底不可用: " + message);
+                    fallbackToLocalIfEnabled(source, message);
+                }
             });
             streamBackend.open(source);
             LogUtil.log("【CS】Camera2处理过程完全执行（流模式: " + source.streamUrl + "）");
         } catch (Exception e) {
             LogUtil.log("【CS】流模式初始化失败: " + android.util.Log.getStackTraceString(e));
+        }
+    }
+
+    // =====================================================================
+    // Camera1 stream mode
+    // =====================================================================
+
+    /**
+     * Camera1 流模式：把 ExoPlayer 输出挂到目标 Surface 的 GL 渲染器上。
+     * <p>
+     * Camera1 的两条预览路径（SurfaceHolder / SurfaceTexture）在实际调用中是互斥的，
+     * 因此共用一个 backend，切换时先释放旧的。
+     *
+     * @param holderSlot true 表示 SurfaceHolder 路径，false 表示 SurfaceTexture 路径
+     * @return true 表示已由流接管，调用方不应再创建 MediaPlayer
+     */
+    boolean initCamera1Stream(Surface targetSurface, boolean holderSlot) {
+        MediaSourceDescriptor source = getMediaSource();
+        if (!source.isStream()) {
+            return false;
+        }
+        if (targetSurface == null || !targetSurface.isValid()) {
+            LogUtil.log("【CS】Camera1 流模式：目标 Surface 无效");
+            return false;
+        }
+
+        releaseCamera1StreamBackend();
+
+        String tag = holderSlot ? "c1_holder_stream" : "c1_texture_stream";
+        GLVideoRenderer renderer = GLVideoRenderer.createSafely(targetSurface, tag);
+        if (holderSlot) {
+            GLVideoRenderer.releaseSafely(c1_renderer_holder);
+            c1_renderer_holder = renderer;
+        } else {
+            GLVideoRenderer.releaseSafely(c1_renderer_texture);
+            c1_renderer_texture = renderer;
+        }
+
+        Surface output;
+        if (renderer != null && renderer.isInitialized() && renderer.getInputSurface() != null) {
+            renderer.setRotation(0);
+            output = renderer.getInputSurface();
+        } else {
+            LogUtil.log("【CS】Camera1 流模式：GL 渲染器不可用，直接输出到目标 Surface");
+            output = targetSurface;
+        }
+
+        try {
+            c1StreamBackend = createStreamBackend();
+            c1StreamBackend.setOutputSurface(output);
+            c1StreamBackend.setVolume(VideoManager.getConfig()
+                    .getBoolean(ConfigManager.KEY_PLAY_VIDEO_SOUND, false) ? 1.0f : 0f);
+            c1StreamBackend.setLooping(false);
+            c1StreamBackend.setListener(new SurfacePlayerBackend.Listener() {
+                @Override
+                public void onReady() {
+                    LogUtil.log("【CS】Camera1 流播放器就绪");
+                }
+
+                @Override
+                public void onError(String message, Throwable cause) {
+                    LogUtil.log("【CS】Camera1 流播放器错误: " + message
+                            + (cause != null ? " " + cause : ""));
+                }
+
+                @Override
+                public void onDisconnected() {
+                    LogUtil.log("【CS】Camera1 流断开连接");
+                }
+
+                @Override
+                public void onReconnected() {
+                    LogUtil.log("【CS】Camera1 流重连成功");
+                }
+
+                @Override
+                public void onCompletion() {
+                    LogUtil.log("【CS】Camera1 流播放完成");
+                }
+
+                @Override
+                public void onPermanentFailure(String message) {
+                    LogUtil.log("【CS】Camera1 流已彻底不可用: " + message);
+                    fallbackToLocalIfEnabled(source, message);
+                }
+            });
+            c1StreamBackend.open(source);
+            LogUtil.log("【CS】Camera1 处理过程完全执行（流模式: " + source.streamUrl + "）");
+            return true;
+        } catch (Exception e) {
+            LogUtil.log("【CS】Camera1 流模式初始化失败: " + android.util.Log.getStackTraceString(e));
+            releaseCamera1StreamBackend();
+            return false;
+        }
+    }
+
+    private void releaseCamera1StreamBackend() {
+        if (c1StreamBackend != null) {
+            c1StreamBackend.release();
+            c1StreamBackend = null;
+        }
+    }
+
+    // =====================================================================
+    // Stream → local fallback
+    // =====================================================================
+
+    /**
+     * 流彻底不可用时切回本地视频。
+     * 仅在配置开启"本地兜底"且确有可用本地视频时执行，且每个会话只切一次。
+     */
+    private void fallbackToLocalIfEnabled(MediaSourceDescriptor source, String reason) {
+        if (source == null || !source.enableLocalFallback) {
+            LogUtil.log("【CS】本地兜底未开启，保持当前画面");
+            return;
+        }
+        if (streamFellBackToLocal) {
+            return;
+        }
+        VideoManager.updateVideoPath(false);
+        String localPath = VideoManager.getCurrentVideoPath();
+        boolean providerBacked = VideoManager.isUsingProviderBackedVideo();
+        if (!providerBacked && (localPath == null || localPath.isEmpty()
+                || !new java.io.File(localPath).exists())) {
+            LogUtil.log("【CS】本地兜底失败：没有可用的本地视频");
+            return;
+        }
+        streamFellBackToLocal = true;
+        LogUtil.log("【CS】流不可用(" + reason + ")，切换到本地视频兜底");
+
+        synchronized (mediaLock) {
+            releaseStreamBackend();
+            releaseCamera1StreamBackend();
+
+            // Camera1：把已建好的渲染器接回本地 MediaPlayer
+            if (c1_renderer_holder != null && c1_renderer_holder.isInitialized()) {
+                mplayer1 = recreatePlayer(mplayer1);
+                startLocalPlayerOnRenderer(mplayer1, c1_renderer_holder, "c1_holder_fallback");
+            }
+            if (c1_renderer_texture != null && c1_renderer_texture.isInitialized()) {
+                mMediaPlayer = recreatePlayer(mMediaPlayer);
+                startLocalPlayerOnRenderer(mMediaPlayer, c1_renderer_texture, "c1_texture_fallback");
+            }
+
+            // Camera2：同理接回四路渲染器
+            if (c2_renderer != null && c2_renderer.isInitialized()) {
+                c2_player = recreatePlayer(c2_player);
+                startLocalPlayerOnRenderer(c2_player, c2_renderer, "c2_preview_fallback");
+            }
+            if (c2_renderer_1 != null && c2_renderer_1.isInitialized()) {
+                c2_player_1 = recreatePlayer(c2_player_1);
+                startLocalPlayerOnRenderer(c2_player_1, c2_renderer_1, "c2_preview_1_fallback");
+            }
+            if (c2_reader_renderer != null && c2_reader_renderer.isInitialized()) {
+                c2_reader_player = recreatePlayer(c2_reader_player);
+                startLocalPlayerOnRenderer(c2_reader_player, c2_reader_renderer, "c2_reader_fallback");
+            }
+            if (c2_reader_renderer_1 != null && c2_reader_renderer_1.isInitialized()) {
+                c2_reader_player_1 = recreatePlayer(c2_reader_player_1);
+                startLocalPlayerOnRenderer(c2_reader_player_1, c2_reader_renderer_1, "c2_reader_1_fallback");
+            }
+        }
+    }
+
+    /** 用本地视频驱动一个已存在的 GL 渲染器。 */
+    private void startLocalPlayerOnRenderer(MediaPlayer player, GLVideoRenderer renderer, String tag) {
+        if (player == null || renderer == null) {
+            return;
+        }
+        try {
+            player.setSurface(renderer.getInputSurface());
+            player.setLooping(true);
+            if (!VideoManager.getConfig().getBoolean(ConfigManager.KEY_PLAY_VIDEO_SOUND, false)) {
+                player.setVolume(0, 0);
+            }
+            android.os.ParcelFileDescriptor pfd = VideoManager.getVideoPFD();
+            if (pfd != null) {
+                player.setDataSource(pfd.getFileDescriptor());
+                pfd.close();
+            } else {
+                player.setDataSource(getVideoPath());
+            }
+            player.prepare();
+            player.start();
+            LogUtil.log("【CS】" + tag + " 已切换到本地视频");
+        } catch (Exception e) {
+            LogUtil.log("【CS】" + tag + " 本地兜底失败: " + android.util.Log.getStackTraceString(e));
         }
     }
 
@@ -306,10 +523,24 @@ public final class MediaPlayerManager {
     /** Restart all active players with current video/stream. */
     void restartAll() {
         synchronized (mediaLock) {
-            if (isStreamMode()) {
+            if (isUsbCaptureMode()) {
+                // USB 模式无本地播放器：重放一次 Surface 注册即可，必要时让宿主重连设备
+                UsbCaptureClient client = UsbCaptureClient.peek();
+                if (client != null) {
+                    client.forceResync();
+                    if (!client.isUvcConnected()) {
+                        client.requestReconnect();
+                    }
+                }
+                LogUtil.log("【CS】【usb】媒体源变化：已重新同步 Surface 注册");
+            } else if (isStreamMode()) {
                 // Stream mode: restart the single stream backend
+                streamFellBackToLocal = false;
                 if (streamBackend != null) {
                     streamBackend.restart();
+                }
+                if (c1StreamBackend != null) {
+                    c1StreamBackend.restart();
                 }
             } else {
                 // Local mode: restart individual MediaPlayers
@@ -374,6 +605,8 @@ public final class MediaPlayerManager {
 
     /** Release Camera1 players and renderers (called from stopPreview/release). */
     void releaseCamera1Resources() {
+        CameraHandlerPatch.releaseCamera1();
+        releaseCamera1StreamBackend();
         GLVideoRenderer.releaseSafely(c1_renderer_holder);
         c1_renderer_holder = null;
         GLVideoRenderer.releaseSafely(c1_renderer_texture);
@@ -386,6 +619,7 @@ public final class MediaPlayerManager {
 
     /** Release Camera2 players and renderers (called from onOpened). */
     void releaseCamera2Resources() {
+        CameraHandlerPatch.releaseCamera2();
         releaseStreamBackend();
         GLVideoRenderer.releaseSafely(c2_renderer);
         c2_renderer = null;

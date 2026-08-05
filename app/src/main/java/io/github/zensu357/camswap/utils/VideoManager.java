@@ -494,6 +494,13 @@ public class VideoManager {
         return ConfigManager.MEDIA_SOURCE_STREAM.equals(type);
     }
 
+    /** Whether current config is set to USB capture card (UVC) mode. */
+    public static boolean isUsbCaptureMode() {
+        ConfigManager config = getConfig();
+        String type = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
+        return ConfigManager.MEDIA_SOURCE_USB.equals(type);
+    }
+
     /** Whether there is a usable media source (local file or stream URL). */
     public static boolean hasUsableMediaSource() {
         return getCurrentMediaSource().isValid();
@@ -507,6 +514,10 @@ public class VideoManager {
     public static MediaSourceDescriptor getCurrentMediaSource() {
         ConfigManager config = getConfig();
         String sourceType = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
+
+        if (ConfigManager.MEDIA_SOURCE_USB.equals(sourceType)) {
+            return MediaSourceDescriptor.usbCapture(config.getUsbCaptureConfig()).build();
+        }
 
         if (ConfigManager.MEDIA_SOURCE_STREAM.equals(sourceType)) {
             String streamUrl = config.getString(ConfigManager.KEY_STREAM_URL, "");

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    标准 UVC 设备匹配规则（与 libuvccamera 自带的 device_filter 一致）：
+      class 14 (0x0E) = Video，独立 UVC 摄像头 / 采集卡
+      class 239 (0xEF) subclass 2 = Miscellaneous / Common Class，
+                                    绝大多数带音频的 HDMI 采集卡（如 MS2131）走这一类
+-->
+<usb>
+    <usb-device class="14" />
+    <usb-device class="239" subclass="2" />
+</usb>

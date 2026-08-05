@@ -54,6 +54,8 @@ android {
     buildFeatures {
         buildConfig = true
         compose true
+        // IUsbCaptureService.aidl —— 宿主进程与目标进程之间的 USB 采集卡 IPC 接口
+        aidl true
     }
 
     // Compose compiler is now managed by org.jetbrains.kotlin.plugin.compose
@@ -149,7 +151,13 @@ dependencies {
     implementation "androidx.media3:media3-exoplayer-hls:1.6.0"
     implementation "androidx.media3:media3-exoplayer-dash:1.6.0"
     implementation "androidx.media3:media3-datasource:1.6.0"
-    // RTMP: media3-exoplayer-rtmp requires native libs and may not be available
-    // on all mirrors. RTMP is handled via reflection in ExoPlayerBackend with
-    // graceful fallback to ProgressiveMediaSource.
+    // RTMP：Media3 里 RTMP 是 DataSource 而非 MediaSource，正确的构件是
+    // media3-datasource-rtmp（传递依赖 io.antmedia:rtmp-client，含 .so）。
+    // 之前反射查找的 androidx.media3.exoplayer.rtmp.RtmpMediaSource$Factory 在 Media3 中并不存在，
+    // 导致 rtmp:// 必然降级到 ProgressiveMediaSource 并失败。
+    implementation "androidx.media3:media3-datasource-rtmp:1.6.0"
+
+    // USB 采集卡 (UVC) —— saki4510t/UVCCamera 的维护分支，含 libusb/libuvc/libjpeg-turbo，
+    // 提供 arm64-v8a / armeabi-v7a / x86 / x86_64 四套 .so，已发布到 Maven Central。
+    implementation 'com.herohan:UVCAndroid:1.0.13'
 }

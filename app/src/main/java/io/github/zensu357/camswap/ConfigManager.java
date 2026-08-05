@@ -65,6 +65,25 @@ public class ConfigManager {
     public static final String MEDIA_SOURCE_LOCAL = "local";
     public static final String MEDIA_SOURCE_STREAM = "stream";
 
+    // USB capture card (UVC) media source keys
+    /** media_source_type 取值：USB 采集卡（UVC）实时输入 */
+    public static final String MEDIA_SOURCE_USB = "usb_capture";
+    /** 与 {@link #MEDIA_SOURCE_USB} 等价的别名，保持与需求文档命名一致 */
+    public static final String SOURCE_TYPE_USB = MEDIA_SOURCE_USB;
+    /** UVC 设备名（UsbDevice#getDeviceName，如 /dev/bus/usb/001/002）；为空表示自动选择第一个 UVC 设备 */
+    public static final String KEY_USB_DEVICE_NAME = "usb_device_name";
+    public static final String KEY_USB_WIDTH = "usb_width";
+    public static final String KEY_USB_HEIGHT = "usb_height";
+    public static final String KEY_USB_FPS = "usb_fps";
+    public static final String KEY_USB_AUTO_RECONNECT = "usb_auto_reconnect";
+    /** root 免授权直连开关：开启后用 root 放开设备节点 + fd 直连，绕过 Android USB 授权 */
+    public static final String KEY_USB_ROOT_BYPASS = "usb_root_bypass";
+
+    public static final int DEFAULT_USB_WIDTH = 1280;
+    public static final int DEFAULT_USB_HEIGHT = 720;
+    public static final int DEFAULT_USB_FPS = 30;
+    public static final boolean DEFAULT_USB_AUTO_RECONNECT = true;
+
     // Broadcast Actions
     public static final String ACTION_UPDATE_CONFIG = IpcContract.ACTION_UPDATE_CONFIG;
     public static final String ACTION_REQUEST_CONFIG = IpcContract.ACTION_REQUEST_CONFIG;
@@ -513,6 +532,60 @@ public class ConfigManager {
             JSONObject updated = new JSONObject(json);
             setConfigSnapshot(updated);
             save(updated);
+        }
+    }
+
+    // =====================================================================
+    // USB capture (UVC) configuration — JSON 序列化 / 反序列化
+    // =====================================================================
+
+    /** 当前 media_source_type 是否为 usb_capture。 */
+    public boolean isUsbCaptureMode() {
+        return MEDIA_SOURCE_USB.equals(getString(KEY_MEDIA_SOURCE_TYPE, MEDIA_SOURCE_LOCAL));
+    }
+
+    /**
+     * 从当前配置快照中反序列化出 USB 采集卡配置。
+     * 缺失字段一律回落到默认值（1280x720@30，自动重连开启）。
+     */
+    public UsbCaptureConfig getUsbCaptureConfig() {
+        return UsbCaptureConfig.fromConfigJson(getConfigSnapshot());
+    }
+
+    /**
+     * 将 USB 采集卡配置写回配置文件（单次写盘，避免逐字段多次落盘与多次广播）。
+     */
+    public void setUsbCaptureConfig(UsbCaptureConfig usbConfig) {
+        if (usbConfig == null) {
+            return;
+        }
+        final UsbCaptureConfig normalized = usbConfig.normalized();
+        updateConfigAndSave(config -> normalized.writeTo(config));
+    }
+
+    /**
+     * 导出 USB 相关配置为独立 JSON 字符串（仅包含 usb_* 与 media_source_type 字段）。
+     */
+    public String exportUsbConfig() {
+        return getUsbCaptureConfig().toJson().toString();
+    }
+
+    /**
+     * 从 JSON 字符串导入 USB 配置并落盘。
+     *
+     * @return 解析成功返回 true；JSON 非法返回 false（此时配置保持不变）
+     */
+    public boolean importUsbConfig(String json) {
+        if (json == null || json.isEmpty()) {
+            return false;
+        }
+        try {
+            UsbCaptureConfig parsed = UsbCaptureConfig.fromJson(new JSONObject(json));
+            setUsbCaptureConfig(parsed);
+            return true;
+        } catch (JSONException e) {
+            io.github.zensu357.camswap.utils.LogUtil.log("【CS】【usb】解析 USB 配置 JSON 失败: " + e);
+            return false;
         }
     }
 

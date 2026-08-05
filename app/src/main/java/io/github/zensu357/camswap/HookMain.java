@@ -233,6 +233,13 @@ public class HookMain {
 
                         initContentObserver(toast_content);
 
+                        // USB 采集卡（UVC）接入端：注册状态接收器并按需绑定宿主服务
+                        try {
+                            CameraHandlerPatch.initInTargetProcess(toast_content);
+                        } catch (Throwable t) {
+                            LogUtil.log("【CS】【usb】目标进程初始化失败: " + t);
+                        }
+
                         try {
                             NativeAudioHook.init();
                             LogUtil.log("【CS】Native audio hooks initialized");

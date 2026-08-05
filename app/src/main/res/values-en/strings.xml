@@ -162,6 +162,40 @@
     <string name="settings_stream_timeout_desc">Connection timeout in milliseconds</string>
     <string name="status_value_stream">Network Stream</string>
 
+    <!-- USB Capture Card (UVC) -->
+    <string name="settings_category_usb">USB Capture Card</string>
+    <string name="settings_media_source_usb">USB Capture</string>
+    <string name="settings_usb_device">Capture Device</string>
+    <string name="settings_usb_device_auto">Auto-select first UVC device</string>
+    <string name="settings_usb_device_hint">Leave empty for auto-select</string>
+    <string name="settings_usb_refresh_devices">Refresh device list</string>
+    <string name="settings_usb_no_device">No UVC capture card detected, plug one in and refresh</string>
+    <string name="settings_usb_resolution">Resolution</string>
+    <string name="settings_usb_fps">Frame Rate</string>
+    <string name="settings_usb_fps_unit">%1$d fps</string>
+    <string name="settings_usb_auto_reconnect">Auto Reconnect</string>
+    <string name="settings_usb_auto_reconnect_desc">Wait for the card after unplug and resume streaming when replugged</string>
+    <string name="settings_usb_connect">Connect / Authorize Capture Card</string>
+    <string name="settings_usb_connect_desc">Tapping here pops the system USB permission dialog — tap Allow and check \"use by default\". If nothing pops up, plug in the capture card first.</string>
+    <string name="settings_usb_service">Reconnect capture service</string>
+    <string name="settings_usb_service_desc">Foreground service holds USB permission and serves frames to target apps</string>
+    <string name="usb_toast_no_host">This device has no USB Host support</string>
+    <string name="usb_toast_no_device">No USB capture card detected, plug one in and retry</string>
+    <string name="usb_toast_requesting">Requesting USB permission…</string>
+    <string name="usb_toast_granted">Capture card authorized, starting stream</string>
+    <string name="settings_usb_status">Capture Status</string>
+    <string name="status_value_usb">USB Capture</string>
+
+    <string name="usb_notif_title">CamSwap USB Capture</string>
+    <string name="usb_notif_channel_name">USB Capture</string>
+    <string name="usb_notif_channel_desc">Keeps the UVC stream alive and distributes frames across processes</string>
+    <string name="usb_state_idle">Idle</string>
+    <string name="usb_state_waiting_device">Waiting for capture card</string>
+    <string name="usb_state_waiting_permission">Waiting for USB permission</string>
+    <string name="usb_state_streaming">Streaming</string>
+    <string name="usb_state_reconnecting">Disconnected, reconnecting</string>
+    <string name="usb_state_error">Failed to open capture card</string>
+
     <!-- Toast / Migration -->
     <string name="config_migrated">Configuration has been migrated</string>
 </resources>

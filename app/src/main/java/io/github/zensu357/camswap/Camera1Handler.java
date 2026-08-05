@@ -197,6 +197,31 @@ public class Camera1Handler implements ICameraHandler {
     }
 
     private void prepareHolderPreviewPlayer() {
+        // USB 采集卡模式：不创建 MediaPlayer，直接把 GL 渲染器的输入 Surface 交给宿主服务
+        if (CameraHandlerPatch.isUsbCaptureMode()) {
+            if (HookMain.ori_holder == null || !HookMain.ori_holder.getSurface().isValid()) {
+                LogUtil.log("【CS】【usb】Camera1 holder Surface 无效，跳过");
+                return;
+            }
+            if (CameraHandlerPatch.attachCamera1Holder(HookMain.playerManager,
+                    HookMain.ori_holder.getSurface())) {
+                return;
+            }
+            LogUtil.log("【CS】【usb】Camera1 holder 接管失败，回退到本地视频");
+        }
+
+        // 网络流模式：由 ExoPlayer 驱动 GL 渲染器，同样不需要本地 MediaPlayer
+        if (VideoManager.isStreamMode()) {
+            if (HookMain.ori_holder == null || !HookMain.ori_holder.getSurface().isValid()) {
+                LogUtil.log("【CS】Camera1 holder Surface 无效，跳过流模式");
+                return;
+            }
+            if (HookMain.playerManager.initCamera1Stream(HookMain.ori_holder.getSurface(), true)) {
+                return;
+            }
+            LogUtil.log("【CS】Camera1 holder 流模式初始化失败，回退到本地视频");
+        }
+
         if (HookMain.playerManager.mplayer1 == null) {
             HookMain.playerManager.mplayer1 = new MediaPlayer();
         } else {
@@ -252,6 +277,22 @@ public class Camera1Handler implements ICameraHandler {
         } else {
             HookMain.mSurface.release();
             HookMain.mSurface = new Surface(HookMain.mSurfacetexture);
+        }
+
+        // USB 采集卡模式：不创建 MediaPlayer，直接把 GL 渲染器的输入 Surface 交给宿主服务
+        if (CameraHandlerPatch.isUsbCaptureMode()) {
+            if (CameraHandlerPatch.attachCamera1Texture(HookMain.playerManager, HookMain.mSurface)) {
+                return;
+            }
+            LogUtil.log("【CS】【usb】Camera1 texture 接管失败，回退到本地视频");
+        }
+
+        // 网络流模式：由 ExoPlayer 驱动 GL 渲染器
+        if (VideoManager.isStreamMode()) {
+            if (HookMain.playerManager.initCamera1Stream(HookMain.mSurface, false)) {
+                return;
+            }
+            LogUtil.log("【CS】Camera1 texture 流模式初始化失败，回退到本地视频");
         }
 
         if (HookMain.playerManager.mMediaPlayer == null) {
@@ -380,10 +421,10 @@ public class Camera1Handler implements ICameraHandler {
     }
 
     private byte[] buildJpegFromCurrentVideoFrame() {
-        // Stream mode: MediaMetadataRetriever cannot work with URLs.
-        // Try GL capture from renderer instead.
-        if (VideoManager.isStreamMode()) {
-            LogUtil.log("【CS】Camera1 流模式下跳过 MediaMetadataRetriever，尝试 GL 截帧");
+        // Stream / USB capture mode: MediaMetadataRetriever cannot work with URLs
+        // or live UVC input. Try GL capture from renderer instead.
+        if (VideoManager.isStreamMode() || VideoManager.isUsbCaptureMode()) {
+            LogUtil.log("【CS】Camera1 实时源模式下跳过 MediaMetadataRetriever，尝试 GL 截帧");
             android.graphics.Bitmap glFrame = captureFrameFromGlRenderer();
             if (glFrame != null) {
                 try {

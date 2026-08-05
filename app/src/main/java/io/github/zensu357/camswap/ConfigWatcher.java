@@ -136,6 +136,8 @@ public final class ConfigWatcher {
         // Stream config snapshots
         String oldSourceType = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
         String oldStreamUrl = config.getString(ConfigManager.KEY_STREAM_URL, "");
+        // USB capture config snapshot
+        UsbCaptureConfig oldUsbConfig = config.getUsbCaptureConfig();
 
         config.updateConfigFromJSON(configJson);
 
@@ -148,13 +150,20 @@ public final class ConfigWatcher {
         // Stream config new values
         String newSourceType = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
         String newStreamUrl = config.getString(ConfigManager.KEY_STREAM_URL, "");
+        UsbCaptureConfig newUsbConfig = config.getUsbCaptureConfig();
 
+        boolean usbChanged = !oldUsbConfig.equals(newUsbConfig);
         boolean mediaChanged = !oldVideo.equals(newVideo) ||
                 !oldImage.equals(newImage) ||
                 !oldMode.equals(newMode) ||
                 (oldFpd != newFpd) ||
                 !oldSourceType.equals(newSourceType) ||
-                !oldStreamUrl.equals(newStreamUrl);
+                !oldStreamUrl.equals(newStreamUrl) ||
+                usbChanged;
+
+        if (usbChanged) {
+            LogUtil.log("【CS】【usb】配置更新: " + oldUsbConfig + " -> " + newUsbConfig);
+        }
 
         if (mediaChanged) {
             // Handle Binder-based video file transfer

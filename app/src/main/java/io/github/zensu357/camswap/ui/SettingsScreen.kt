@@ -9,11 +9,13 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Image
@@ -26,7 +28,9 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SettingsInputAntenna
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.outlined.FolderSpecial
@@ -190,8 +194,9 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
         // ==================== Stream Settings ====================
         SettingsSection(title = stringResource(R.string.settings_category_stream)) {
-            // Source type toggle: local vs stream
+            // Source type toggle: local vs stream vs usb capture
             val isStreamMode = uiState.mediaSourceType == ConfigManager.MEDIA_SOURCE_STREAM
+            val isUsbMode = uiState.mediaSourceType == ConfigManager.MEDIA_SOURCE_USB
 
             Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -212,14 +217,17 @@ fun SettingsScreen(viewModel: MainViewModel) {
             }
 
             Row(
-                    modifier = Modifier.fillMaxWidth().padding(start = 36.dp),
+                    modifier = Modifier.fillMaxWidth()
+                            .padding(start = 36.dp)
+                            .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                val isLocalMode = !isStreamMode && !isUsbMode
                 FilterChip(
-                        selected = !isStreamMode,
+                        selected = isLocalMode,
                         onClick = { viewModel.setMediaSourceType(ConfigManager.MEDIA_SOURCE_LOCAL) },
                         label = { Text(stringResource(R.string.settings_media_source_local)) },
-                        leadingIcon = if (!isStreamMode) {
+                        leadingIcon = if (isLocalMode) {
                             { Icon(Icons.Outlined.Videocam, null, Modifier.size(18.dp)) }
                         } else null
                 )
@@ -229,6 +237,19 @@ fun SettingsScreen(viewModel: MainViewModel) {
                         label = { Text(stringResource(R.string.settings_media_source_stream)) },
                         leadingIcon = if (isStreamMode) {
                             { Icon(Icons.Default.Link, null, Modifier.size(18.dp)) }
+                        } else null
+                )
+                FilterChip(
+                        selected = isUsbMode,
+                        onClick = {
+                            viewModel.setMediaSourceType(ConfigManager.MEDIA_SOURCE_USB)
+                            viewModel.refreshUsbDevices()
+                            // 切到 USB 模式时立即在前台请求授权（点击瞬间进程在前台，弹窗可靠）
+                            viewModel.requestUsbPermission(context)
+                        },
+                        label = { Text(stringResource(R.string.settings_media_source_usb)) },
+                        leadingIcon = if (isUsbMode) {
+                            { Icon(Icons.Default.Usb, null, Modifier.size(18.dp)) }
                         } else null
                 )
             }
@@ -353,6 +374,135 @@ fun SettingsScreen(viewModel: MainViewModel) {
                         )
                     }
                 }
+            }
+        }
+
+        // ==================== USB Capture Card (UVC) Settings ====================
+        AnimatedVisibility(
+                visible = uiState.mediaSourceType == ConfigManager.MEDIA_SOURCE_USB,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+        ) {
+            SettingsSection(title = stringResource(R.string.settings_category_usb)) {
+
+                // ---- 连接 / 授权采集卡（主入口，必须在前台点击才能弹出系统授权窗）----
+                Button(
+                        onClick = { viewModel.requestUsbPermission(context) },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                ) {
+                    Icon(Icons.Default.Usb, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(stringResource(R.string.settings_usb_connect))
+                }
+                Text(
+                        text = stringResource(R.string.settings_usb_connect_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
+                )
+
+                SettingsDivider()
+
+                // ---- Root 免授权直连（绕过 Android USB 授权框架）----
+                SettingsSwitchRow(
+                        icon = Icons.Default.Security,
+                        title = stringResource(R.string.settings_usb_root_bypass),
+                        subtitle = stringResource(R.string.settings_usb_root_bypass_desc),
+                        checked = uiState.usbRootBypass,
+                        onCheckedChange = { viewModel.setUsbRootBypass(it, context) }
+                )
+
+                SettingsDivider()
+
+                // ---- 采集卡设备选择 ----
+                val autoLabel = stringResource(R.string.settings_usb_device_auto)
+                val deviceOptions = buildList {
+                    add(UsbDeviceOption("", autoLabel))
+                    addAll(uiState.usbDevices)
+                }
+                val selectedDeviceLabel = deviceOptions
+                        .firstOrNull { it.deviceName == uiState.usbDeviceName }
+                        ?.label
+                        ?: uiState.usbDeviceName.ifEmpty { autoLabel }
+
+                SettingsDropdownRow(
+                        icon = Icons.Default.Usb,
+                        title = stringResource(R.string.settings_usb_device),
+                        selectedLabel = selectedDeviceLabel,
+                        options = deviceOptions.map { option ->
+                            option.label to { viewModel.setUsbDeviceName(option.deviceName) }
+                        }
+                )
+
+                if (uiState.usbDevices.isEmpty()) {
+                    Text(
+                            text = stringResource(R.string.settings_usb_no_device),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.padding(start = 36.dp, bottom = 4.dp)
+                    )
+                }
+
+                SettingsClickRow(
+                        icon = Icons.Default.Refresh,
+                        title = stringResource(R.string.settings_usb_refresh_devices),
+                        onClick = { viewModel.refreshUsbDevices() }
+                )
+
+                SettingsDivider()
+
+                // ---- 分辨率下拉框 ----
+                val resolutions = listOf(
+                        640 to 480,
+                        800 to 600,
+                        1024 to 768,
+                        1280 to 720,
+                        1280 to 960,
+                        1600 to 1200,
+                        1920 to 1080,
+                        2560 to 1440,
+                        3840 to 2160
+                )
+                SettingsDropdownRow(
+                        icon = Icons.Default.AspectRatio,
+                        title = stringResource(R.string.settings_usb_resolution),
+                        selectedLabel = "${uiState.usbWidth}x${uiState.usbHeight}",
+                        options = resolutions.map { (width, height) ->
+                            "${width}x${height}" to { viewModel.setUsbResolution(width, height) }
+                        }
+                )
+
+                SettingsDivider()
+
+                // ---- 帧率下拉框 ----
+                val fpsOptions = listOf(15, 20, 24, 25, 30, 50, 60)
+                SettingsDropdownRow(
+                        icon = Icons.Default.Speed,
+                        title = stringResource(R.string.settings_usb_fps),
+                        selectedLabel = stringResource(R.string.settings_usb_fps_unit, uiState.usbFps),
+                        options = fpsOptions.map { fps ->
+                            fps.toString() to { viewModel.setUsbFps(fps) }
+                        }
+                )
+
+                SettingsDivider()
+
+                SettingsSwitchRow(
+                        icon = Icons.Default.Refresh,
+                        title = stringResource(R.string.settings_usb_auto_reconnect),
+                        subtitle = stringResource(R.string.settings_usb_auto_reconnect_desc),
+                        checked = uiState.usbAutoReconnect,
+                        onCheckedChange = { viewModel.setUsbAutoReconnect(it) }
+                )
+
+                SettingsDivider()
+
+                SettingsClickRow(
+                        icon = Icons.Default.SettingsInputAntenna,
+                        title = stringResource(R.string.settings_usb_service),
+                        subtitle = stringResource(R.string.settings_usb_service_desc),
+                        onClick = { viewModel.requestUsbPermission(context) }
+                )
             }
         }
 
@@ -629,6 +779,68 @@ private fun SettingsClickRow(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                 modifier = Modifier.size(20.dp)
         )
+    }
+}
+
+/**
+ * 通用下拉框设置项：左侧图标 + 标题，右侧 ExposedDropdownMenu。
+ * 用于 USB 采集卡的设备 / 分辨率 / 帧率选择。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsDropdownRow(
+        icon: ImageVector,
+        title: String,
+        selectedLabel: String,
+        options: List<Pair<String, () -> Unit>>
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier.size(22.dp)
+        )
+        Spacer(modifier = Modifier.width(14.dp))
+        Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        ExposedDropdownMenuBox(
+                expanded = expanded,
+                onExpandedChange = { expanded = it },
+                modifier = Modifier.width(190.dp)
+        ) {
+            OutlinedTextField(
+                    value = selectedLabel,
+                    onValueChange = {},
+                    readOnly = true,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    modifier = Modifier.menuAnchor().fillMaxWidth()
+            )
+            ExposedDropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false }
+            ) {
+                options.forEach { (label, onSelect) ->
+                    DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = {
+                                onSelect()
+                                expanded = false
+                            }
+                    )
+                }
+            }
+        }
     }
 }
 

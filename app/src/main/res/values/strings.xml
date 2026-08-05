@@ -162,6 +162,40 @@
     <string name="settings_stream_timeout_desc">连接超时时间（毫秒）</string>
     <string name="status_value_stream">网络流</string>
 
+    <!-- USB Capture Card (UVC) -->
+    <string name="settings_category_usb">USB 采集卡设置</string>
+    <string name="settings_media_source_usb">USB 采集卡</string>
+    <string name="settings_usb_device">采集卡设备</string>
+    <string name="settings_usb_device_auto">自动选择第一个 UVC 设备</string>
+    <string name="settings_usb_device_hint">留空表示自动选择</string>
+    <string name="settings_usb_refresh_devices">刷新设备列表</string>
+    <string name="settings_usb_no_device">未检测到 UVC 采集卡，请插入后刷新</string>
+    <string name="settings_usb_resolution">分辨率</string>
+    <string name="settings_usb_fps">帧率</string>
+    <string name="settings_usb_fps_unit">%1$d fps</string>
+    <string name="settings_usb_auto_reconnect">断线自动重连</string>
+    <string name="settings_usb_auto_reconnect_desc">采集卡拔出后自动等待并在插回时恢复开流</string>
+    <string name="settings_usb_connect">连接采集卡 / 授权</string>
+    <string name="settings_usb_connect_desc">点击后会弹出系统 USB 授权窗，请点\"允许\"并勾选\"默认打开\"。若没弹窗请先插好采集卡再点。</string>
+    <string name="settings_usb_service">重新连接采集服务</string>
+    <string name="settings_usb_service_desc">以前台服务持有 USB 权限，供目标应用跨进程取流</string>
+    <string name="usb_toast_no_host">此设备不支持 USB 摄像头（无 USB Host）</string>
+    <string name="usb_toast_no_device">未检测到 USB 采集卡，请插好后重试</string>
+    <string name="usb_toast_requesting">正在请求 USB 授权…</string>
+    <string name="usb_toast_granted">采集卡已授权，正在开流</string>
+    <string name="settings_usb_status">采集卡状态</string>
+    <string name="status_value_usb">USB 采集卡</string>
+
+    <string name="usb_notif_title">CamSwap USB 采集卡</string>
+    <string name="usb_notif_channel_name">USB 采集卡</string>
+    <string name="usb_notif_channel_desc">保持 USB 采集卡开流与跨进程画面分发</string>
+    <string name="usb_state_idle">空闲</string>
+    <string name="usb_state_waiting_device">等待插入采集卡</string>
+    <string name="usb_state_waiting_permission">等待 USB 授权</string>
+    <string name="usb_state_streaming">开流中</string>
+    <string name="usb_state_reconnecting">连接已断开，正在重连</string>
+    <string name="usb_state_error">采集卡打开失败</string>
+
     <!-- Toast / Migration -->
     <string name="config_migrated">配置已自动迁移</string>
 </resources>

@@ -57,5 +57,12 @@ public interface SurfacePlayerBackend {
 
         /** Playback completed (local file mode only). */
         void onCompletion();
+
+        /**
+         * 流已彻底不可用（重连次数耗尽），调用方应切换到本地兜底。
+         * 默认空实现，保持既有实现类兼容。
+         */
+        default void onPermanentFailure(String message) {
+        }
     }
 }

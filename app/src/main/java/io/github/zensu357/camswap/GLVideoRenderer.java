@@ -132,6 +132,30 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
         return mInputSurface;
     }
 
+    /**
+     * 设置输入 SurfaceTexture 的默认缓冲区尺寸。
+     * <p>
+     * 当生产者是本进程的 MediaPlayer 时，MediaPlayer 会自行按视频尺寸设置缓冲区，
+     * 无需调用本方法；但当输入 Surface 被跨进程交给宿主的 UVC 渲染器时，
+     * 远端 {@code eglCreateWindowSurface} 会读取该默认尺寸——若不设置则为 1x1，
+     * 画面会退化成单像素。USB 采集卡模式下必须在把 Surface 交给宿主之前调用。
+     */
+    public void setInputBufferSize(int width, int height) {
+        if (width <= 0 || height <= 0 || mReleased) {
+            return;
+        }
+        SurfaceTexture texture = mInputSurfaceTexture;
+        if (texture == null) {
+            return;
+        }
+        try {
+            texture.setDefaultBufferSize(width, height);
+            LogUtil.log("【CS】【GL】" + mTag + " 输入缓冲区尺寸设为 " + width + "x" + height);
+        } catch (Exception e) {
+            LogUtil.log("【CS】【GL】" + mTag + " 设置输入缓冲区尺寸失败: " + e);
+        }
+    }
+
     public int getSurfaceWidth() {
         return mSurfaceWidth;
     }
