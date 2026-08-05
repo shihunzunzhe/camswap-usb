@@ -92,6 +92,8 @@ public class UsbCaptureService extends Service {
     private USBMonitor usbMonitor;
     private volatile UVCCamera uvcCamera;
     private volatile RendererHolder rendererHolder;
+    private volatile UsbRootConnector.Connection rootConnection;
+    private volatile boolean rootBypass;
     private volatile UsbDevice activeDevice;
     private volatile String activeDeviceName = "";
     private volatile int activeWidth;
@@ -181,6 +183,7 @@ public class UsbCaptureService extends Service {
         configManager.setContext(this);
         configManager.forceReload();
         usbConfig = configManager.getUsbCaptureConfig();
+        rootBypass = configManager.getBoolean(ConfigManager.KEY_USB_ROOT_BYPASS, false);
         log("加载配置: " + usbConfig);
 
         usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
@@ -205,6 +208,9 @@ public class UsbCaptureService extends Service {
         if (configManager != null) {
             configManager.forceReload();
             applyConfigIfChanged(configManager.getUsbCaptureConfig());
+            boolean __newRoot = configManager.getBoolean(ConfigManager.KEY_USB_ROOT_BYPASS, false);
+            if (__newRoot != rootBypass) { rootBypass = __newRoot;
+                if (workerHandler != null) workerHandler.post(this::stopUvc); }
         }
         // 配置未变化时 applyConfigIfChanged 不会重扫，这里兜底触发一次
         if (state != STATE_STREAMING && workerHandler != null) {
@@ -718,7 +724,35 @@ public class UsbCaptureService extends Service {
             }
             return;
         }
-        requestPermissionOrOpen(target);
+        if (rootBypass) {
+            startUvcViaRoot(target);
+        } else {
+            requestPermissionOrOpen(target);
+        }
+    }
+
+    private void startUvcViaRoot(UsbDevice device) {
+        if (released || uvcCamera != null || rootConnection != null) return;
+        int width = usbConfig.width, height = usbConfig.height, fps = usbConfig.fps;
+        RendererHolder holder;
+        try { holder = new RendererHolder(width, height, rendererHolderCallback); }
+        catch (Throwable t) { log("RendererHolder fail: " + t); setError("GL init fail"); return; }
+        Surface primary = holder.getPrimarySurface();
+        if (primary == null || !primary.isValid()) { holder.release(); setError("GL init fail"); return; }
+        UsbRootConnector.Connection conn = UsbRootConnector.openAndStart(device, width, height, fps, primary);
+        if (conn == null) {
+            holder.release();
+            setError("Root direct-connect failed (grant root; see log tag root)");
+            if (usbConfig.autoReconnect) scheduleReconnect();
+            return;
+        }
+        rootConnection = conn; uvcCamera = conn.camera; rendererHolder = holder;
+        activeDevice = device; activeDeviceName = device.getDeviceName();
+        activeWidth = width; activeHeight = height; activeFps = fps;
+        lastFrameAtMs = SystemClock.elapsedRealtime(); reconnectAttempt = 0;
+        markAllSlavesDetached(); attachAllSlaves(); setState(STATE_STREAMING);
+        log("root direct-connect streaming: " + describe(device) + " " + width + "x" + height + "@" + fps);
+        mainHandler.post(this::startForegroundSafely); updateNotification();
     }
 
     private void requestPermissionOrOpen(UsbDevice device) {
@@ -991,6 +1025,9 @@ public class UsbCaptureService extends Service {
 
     /** worker 线程：停止开流并释放 UVC / 渲染资源。 */
     private void stopUvc() {
+        UsbRootConnector.Connection rc = rootConnection;
+        if (rc != null) { rootConnection = null; uvcCamera = null;
+            try { rc.release(); } catch (Throwable t) { log("root release ex: " + t); } }
         UVCCamera camera = uvcCamera;
         uvcCamera = null;
         if (camera != null) {
