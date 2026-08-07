@@ -562,8 +562,11 @@ public class MicrophoneHandler implements ICameraHandler {
         hookMethod(classLoader, "android.media.AudioRecord", "read",
                 new Class<?>[] { ByteBuffer.class, int.class }, chain -> {
                     Object[] args = toArgs(chain.getArgs());
+                    ByteBuffer buf = args[0] instanceof ByteBuffer ? (ByteBuffer) args[0] : null;
+                    // 必须在真实 read 之前记录 position：read 后有的实现推进、有的不推进
+                    int posBefore = buf != null ? buf.position() : 0;
                     Object result = chain.proceed(args);
-                    replaceByteBufferResult(chain.getThisObject(), (ByteBuffer) args[0], intResult(result), "ByteBuffer");
+                    replaceByteBufferResult(chain.getThisObject(), buf, posBefore, intResult(result), "ByteBuffer");
                     return result;
                 }, "AudioRecord.read(ByteBuffer, int)");
     }
@@ -583,8 +586,10 @@ public class MicrophoneHandler implements ICameraHandler {
         hookMethod(classLoader, "android.media.AudioRecord", "read",
                 new Class<?>[] { ByteBuffer.class, int.class, int.class }, chain -> {
                     Object[] args = toArgs(chain.getArgs());
+                    ByteBuffer buf = args[0] instanceof ByteBuffer ? (ByteBuffer) args[0] : null;
+                    int posBefore = buf != null ? buf.position() : 0;
                     Object result = chain.proceed(args);
-                    replaceByteBufferResult(chain.getThisObject(), (ByteBuffer) args[0], intResult(result),
+                    replaceByteBufferResult(chain.getThisObject(), buf, posBefore, intResult(result),
                             "ByteBuffer(int,int)");
                     return result;
                 }, "AudioRecord.read(ByteBuffer, int, int)");
@@ -605,31 +610,50 @@ public class MicrophoneHandler implements ICameraHandler {
                 }, "MediaRecorder.setAudioSource(int)");
     }
 
-    private static void replaceByteBufferResult(Object audioRecord, ByteBuffer buffer, int result, String methodTag) {
+    /**
+     * 替换 {@code AudioRecord.read(ByteBuffer, ...)} 读到的数据。
+     *
+     * <p>崩溃安全：以「读前 position」{@code posBefore} 为数据起点，区间夹在 {@code [0, limit]}
+     * 内计算（见 {@link MicByteBufferRegion}），避免旧代码 {@code position(pos - result)} 在
+     * position 未推进时算出负值抛 {@code Bad position}（腾讯 LiteAV 走此路径）。读完先把替换数据
+     * 写进原数据区间，再把 position 恢复到真实 read 结束时的位置。
+     *
+     * <p>音源选择与 byte[]/short[] 路径一致：{@code stream}/流模式 video_sync 注入 RTMP 音频，
+     * 缓冲未就绪或静音模式则填 0——真实麦克风绝不透传。
+     */
+    private static void replaceByteBufferResult(Object audioRecord, ByteBuffer buffer,
+            int posBefore, int result, String methodTag) {
         if (!isMicHookEnabled() || result <= 0 || buffer == null) {
             return;
         }
-        int pos = buffer.position();
         AudioRecordParams p = getParams(audioRecord);
-
         logReadCall(result, methodTag);
 
-        if (isVideoSyncMode()) {
-            long posMs = getVideoPlaybackPositionMs();
-            buffer.position(pos - result);
-            AudioDataProvider.fillByteBufferAtPosition(buffer, result,
-                    p.sampleRate, p.channelCount, posMs);
-            buffer.position(pos);
-        } else if (isReplaceMode()) {
-            buffer.position(pos - result);
-            AudioDataProvider.fillByteBuffer(buffer, result,
-                    p.sampleRate, p.channelCount);
-            buffer.position(pos);
-        } else {
-            byte[] zeros = new byte[result];
-            buffer.position(pos - result);
-            buffer.put(zeros);
-            buffer.position(pos);
+        try {
+            int posAfter = buffer.position(); // 真实 read 结束位置（可能==posBefore，也可能已推进）
+            MicByteBufferRegion.Region region =
+                    MicByteBufferRegion.compute(posBefore, buffer.limit(), result);
+            if (region.len <= 0) {
+                return;
+            }
+
+            byte[] tmp = new byte[region.len]; // 默认全 0 → 静音兜底
+            if (shouldUseStreamPcm()) {
+                StreamPcmBuffer.read(tmp, 0, region.len, p.sampleRate, p.channelCount);
+            } else if (isVideoSyncMode()) {
+                long posMs = getVideoPlaybackPositionMs();
+                AudioDataProvider.fillBytesAtPosition(tmp, 0, region.len,
+                        p.sampleRate, p.channelCount, posMs);
+            } else if (isReplaceMode()) {
+                AudioDataProvider.fillBytes(tmp, 0, region.len, p.sampleRate, p.channelCount);
+            }
+            // else: mute / stream 缓冲未就绪 → tmp 保持全 0
+
+            buffer.position(region.start);
+            buffer.put(tmp, 0, region.len);
+            buffer.position(posAfter); // 恢复到真实 read 结束位置，交还目标 App
+        } catch (Throwable t) {
+            LogUtil.log(TAG + " replaceByteBufferResult 异常: " + t);
         }
     }
 
