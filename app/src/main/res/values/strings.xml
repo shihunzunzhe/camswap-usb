@@ -24,6 +24,9 @@
     <string name="status_no_selection">未选择视频</string>
     <string name="status_working">工作中</string>
     <string name="status_paused">已暂停</string>
+    <string name="status_module_disabled">模块已禁用</string>
+    <string name="status_module_disabled_hint">设置里开启了「禁用模块」，所有 Hook 已关闭。点下方按钮重新启用。</string>
+    <string name="status_enable_module">重新启用模块</string>
     <string name="status_label_video">视频源</string>
     <string name="status_label_play_mode">播放模式</string>
     <string name="status_label_mic">麦克风</string>
@@ -149,7 +152,7 @@
     <string name="settings_media_source_local">本地文件</string>
     <string name="settings_media_source_stream">网络流</string>
     <string name="settings_stream_url">流地址</string>
-    <string name="settings_stream_url_hint">输入 rtsp:// rtmp:// http:// 等流地址</string>
+    <string name="settings_stream_url_hint">输入 rtmp://（推荐 Ijk）/ rtsp:// / http(s):// 等流地址</string>
     <string name="settings_stream_auto_reconnect">自动重连</string>
     <string name="settings_stream_auto_reconnect_desc">流断开后自动尝试重连</string>
     <string name="settings_stream_local_fallback">本地兜底</string>

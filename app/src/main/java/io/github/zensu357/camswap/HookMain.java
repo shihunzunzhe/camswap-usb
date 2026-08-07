@@ -182,6 +182,24 @@ public class HookMain {
         hookImageReaderAcquireMethods(classLoader);
         hookImageReaderListener(classLoader);
         hookCaptureFailed(classLoader);
+
+        // 流模式（RTMP/HTTP）跑在目标进程：尽早放行明文流量，避免 CLEARTEXT_NOT_PERMITTED 黑屏
+        try {
+            NetworkPolicyBypass.install(classLoader);
+        } catch (Throwable t) {
+            LogUtil.log("【CS】【net】NetworkPolicyBypass 安装失败: " + t);
+        }
+        // 预装 loadLibrary hook，后续 RTMP/Ijk 打开时才能从 CamSwap APK 解 so
+        try {
+            ModuleNativeLoader.installLoadLibraryHook();
+        } catch (Throwable ignored) {
+        }
+        // 旁路 AudioTrack.write → StreamPcmBuffer，供 mic video_sync 在流模式下取 RTMP 音轨
+        try {
+            AudioTrackWriteHook.install(classLoader);
+        } catch (Throwable t) {
+            LogUtil.log("【CS】AudioTrackWriteHook 安装失败: " + t);
+        }
     }
 
     private void hookMediaRecorderSetCamera(ClassLoader classLoader, String packageName,

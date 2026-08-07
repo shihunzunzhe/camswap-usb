@@ -81,6 +81,32 @@ public final class MediaPlayerManager {
         return VideoManager.isUsbCaptureMode();
     }
 
+    /** 流 backend 是否仍存活（供 Camera2SessionHook 判断是否需要强制重建）。 */
+    boolean hasActiveStreamBackend() {
+        return streamBackend != null || c1StreamBackend != null;
+    }
+
+    /**
+     * 流播放音量：play_video_sound 开 → 1；
+     * 或 mic hook 为 video_sync → 1（保证 PCM 旁路非零）；
+     * 否则 0。
+     */
+    private static float resolveStreamVolume() {
+        try {
+            ConfigManager cfg = VideoManager.getConfig();
+            if (cfg.getBoolean(ConfigManager.KEY_PLAY_VIDEO_SOUND, false)) {
+                return 1.0f;
+            }
+            if (cfg.getBoolean(ConfigManager.KEY_ENABLE_MIC_HOOK, false)
+                    && ConfigManager.MIC_MODE_VIDEO_SYNC.equals(
+                            cfg.getString(ConfigManager.KEY_MIC_HOOK_MODE, ConfigManager.MIC_MODE_MUTE))) {
+                return 1.0f;
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0f;
+    }
+
     // =====================================================================
     // Camera2 player initialization
     // =====================================================================
@@ -200,19 +226,42 @@ public final class MediaPlayerManager {
             c2_renderer_1 = GLVideoRenderer.createSafely(previewSurface1, "c2_preview_1_stream");
         }
 
+        // 流模式默认水平镜像：抵消微信等 App 前置预览的二次镜像，使 OBS 画面方向正确。
+        // 本地文件模式不翻（用户素材方向由 rotation_offset 管）。
+        applyStreamMirror(c2_renderer, true);
+        applyStreamMirror(c2_renderer_1, true);
+        applyStreamMirror(c2_reader_renderer, true);
+        applyStreamMirror(c2_reader_renderer_1, true);
+
         // Create stream backend — output to primary GL renderer's input surface
         try {
-            streamBackend = createStreamBackend();
+            streamBackend = createStreamBackend(source);
             GLVideoRenderer primaryRenderer = (previewSurface != null) ? c2_renderer : c2_reader_renderer;
             Surface backendSurface;
             if (primaryRenderer != null && primaryRenderer.isInitialized()) {
+                // 流模式也要设默认缓冲区尺寸，否则部分机型 SurfaceTexture 初始为 0x0，首帧黑屏
+                int bw = Math.max(HookMain.c2_ori_width, 1280);
+                int bh = Math.max(HookMain.c2_ori_height, 720);
+                primaryRenderer.setInputBufferSize(bw, bh);
+                primaryRenderer.setRotation(0);
                 backendSurface = primaryRenderer.getInputSurface();
+                LogUtil.log("【CS】流模式 primary GL 输入面 "
+                        + bw + "x" + bh + " mirror=" + primaryRenderer.isMirrorHorizontal());
             } else {
                 backendSurface = primaryTarget;
+                LogUtil.log("【CS】流模式 GL 不可用，Ijk 直出目标 Surface（无镜像补偿）");
             }
+            // 把其它槽位的渲染器也设上合理缓冲区，避免后续 YUV 截帧 / 副预览拿到 1x1
+            applyDefaultStreamBuffer(c2_renderer);
+            applyDefaultStreamBuffer(c2_renderer_1);
+            applyDefaultStreamBuffer(c2_reader_renderer);
+            applyDefaultStreamBuffer(c2_reader_renderer_1);
             streamBackend.setOutputSurface(backendSurface);
-            streamBackend.setVolume(VideoManager.getConfig().getBoolean(
-                    ConfigManager.KEY_PLAY_VIDEO_SOUND, false) ? 1.0f : 0f);
+            // 外放：跟随 play_video_sound。
+            // mic video_sync 依赖 AudioTrack.write 旁路 PCM——Ijk/Exo 的 setVolume(0)
+            // 在部分实现里会在 write 前把采样乘 0，导致麦克风拿到静音；
+            // 因此只要开了 mic+video_sync，就强制 volume=1，外放可用系统静音键关掉。
+            streamBackend.setVolume(resolveStreamVolume());
             streamBackend.setLooping(false); // streams don't loop
             streamBackend.setListener(new SurfacePlayerBackend.Listener() {
                 @Override
@@ -293,6 +342,11 @@ public final class MediaPlayerManager {
         Surface output;
         if (renderer != null && renderer.isInitialized() && renderer.getInputSurface() != null) {
             renderer.setRotation(0);
+            // Camera1 流同样做水平镜像，抵消前置预览二次镜像
+            renderer.setMirrorHorizontal(true);
+            renderer.setInputBufferSize(
+                    Math.max(HookMain.mwidth, 1280),
+                    Math.max(HookMain.mhight, 720));
             output = renderer.getInputSurface();
         } else {
             LogUtil.log("【CS】Camera1 流模式：GL 渲染器不可用，直接输出到目标 Surface");
@@ -300,10 +354,9 @@ public final class MediaPlayerManager {
         }
 
         try {
-            c1StreamBackend = createStreamBackend();
+            c1StreamBackend = createStreamBackend(source);
             c1StreamBackend.setOutputSurface(output);
-            c1StreamBackend.setVolume(VideoManager.getConfig()
-                    .getBoolean(ConfigManager.KEY_PLAY_VIDEO_SOUND, false) ? 1.0f : 0f);
+            c1StreamBackend.setVolume(resolveStreamVolume());
             c1StreamBackend.setLooping(false);
             c1StreamBackend.setListener(new SurfacePlayerBackend.Listener() {
                 @Override
@@ -442,15 +495,79 @@ public final class MediaPlayerManager {
         }
     }
 
+    /**
+     * 创建流播放后端。
+     * <ul>
+     *   <li>RTMP/RTMPS：优先 {@link IjkPlayerBackend}（与 VCAMPRO 相同引擎，目标进程更稳）；</li>
+     *   <li>其它协议（RTSP/HLS/DASH/HTTP）：{@link ExoPlayerBackend}；</li>
+     *   <li>都失败时退 {@link AndroidMediaPlayerBackend}（仅本地文件有意义）。</li>
+     * </ul>
+     */
     private SurfacePlayerBackend createStreamBackend() {
-        // Try to create ExoPlayerBackend via reflection to avoid hard compile dependency
-        // when Media3 is not on classpath (should not happen with proper gradle setup)
+        return createStreamBackend(getMediaSource());
+    }
+
+    private SurfacePlayerBackend createStreamBackend(MediaSourceDescriptor source) {
+        String url = source != null ? source.streamUrl : null;
+        if (shouldPreferIjk(url)) {
+            try {
+                Class<?> clazz = Class.forName("io.github.zensu357.camswap.IjkPlayerBackend");
+                SurfacePlayerBackend backend =
+                        (SurfacePlayerBackend) clazz.getDeclaredConstructor().newInstance();
+                LogUtil.log("【CS】流后端选用 IjkPlayerBackend（RTMP/低延迟直播）");
+                return backend;
+            } catch (Throwable t) {
+                LogUtil.log("【CS】IjkPlayerBackend 不可用，回退 ExoPlayer: " + t);
+            }
+        }
         try {
             Class<?> clazz = Class.forName("io.github.zensu357.camswap.ExoPlayerBackend");
-            return (SurfacePlayerBackend) clazz.getDeclaredConstructor().newInstance();
+            SurfacePlayerBackend backend =
+                    (SurfacePlayerBackend) clazz.getDeclaredConstructor().newInstance();
+            LogUtil.log("【CS】流后端选用 ExoPlayerBackend");
+            return backend;
         } catch (Exception e) {
             LogUtil.log("【CS】ExoPlayerBackend 不可用，回退到 AndroidMediaPlayerBackend: " + e);
             return new AndroidMediaPlayerBackend();
+        }
+    }
+
+    /** RTMP 家族（及空 scheme 的直播地址）优先 Ijk；HLS/DASH/RTSP 仍走 Exo。 */
+    private static boolean shouldPreferIjk(String url) {
+        if (url == null || url.isEmpty()) {
+            return false;
+        }
+        String u = url.toLowerCase(java.util.Locale.ROOT).trim();
+        if (u.startsWith("rtmp://") || u.startsWith("rtmps://") || u.startsWith("rtmpt://")) {
+            return true;
+        }
+        // 没有明确后缀的直播常见地址也优先 Ijk（VCAMPRO 只支持 liveURL=任意 rtmp）
+        if (u.startsWith("rtp://")) {
+            return true;
+        }
+        return false;
+    }
+
+    private static void applyDefaultStreamBuffer(GLVideoRenderer renderer) {
+        if (renderer == null || !renderer.isInitialized()) {
+            return;
+        }
+        int w = Math.max(HookMain.c2_ori_width, 1280);
+        int h = Math.max(HookMain.c2_ori_height, 720);
+        try {
+            renderer.setInputBufferSize(w, h);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void applyStreamMirror(GLVideoRenderer renderer, boolean mirror) {
+        if (renderer == null || !renderer.isInitialized()) {
+            return;
+        }
+        try {
+            renderer.setMirrorHorizontal(mirror);
+            renderer.setRotation(0);
+        } catch (Throwable ignored) {
         }
     }
 
@@ -534,14 +651,24 @@ public final class MediaPlayerManager {
                 }
                 LogUtil.log("【CS】【usb】媒体源变化：已重新同步 Surface 注册");
             } else if (isStreamMode()) {
-                // Stream mode: restart the single stream backend
+                // Stream mode: 若 backend 还在就 restart；否则清 lastInit 缓存并靠
+                // 下一次 build()/addTarget 触发 startPlayback 完整重建
+                // （仅 restart 在 surface 已变/backend 已释放时不够，微信直播会黑屏）。
                 streamFellBackToLocal = false;
                 if (streamBackend != null) {
                     streamBackend.restart();
-                }
-                if (c1StreamBackend != null) {
+                    LogUtil.log("【CS】流模式 restartAll：已 restart 现有 streamBackend");
+                } else if (c1StreamBackend != null) {
                     c1StreamBackend.restart();
+                    LogUtil.log("【CS】流模式 restartAll：已 restart 现有 c1StreamBackend");
+                } else {
+                    LogUtil.log("【CS】流模式 restartAll：backend 为空，等待下次 startPlayback 重建");
                 }
+                // 即便 backend 还在，也确保 secondary 渲染器缓冲尺寸正确
+                applyDefaultStreamBuffer(c2_renderer);
+                applyDefaultStreamBuffer(c2_renderer_1);
+                applyDefaultStreamBuffer(c2_reader_renderer);
+                applyDefaultStreamBuffer(c2_reader_renderer_1);
             } else {
                 // Local mode: restart individual MediaPlayers
                 VideoManager.checkProviderAvailability();

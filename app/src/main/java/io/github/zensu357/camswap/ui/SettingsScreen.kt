@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -46,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -263,7 +265,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 Column {
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Stream URL input
+                    // Stream URL input —— 失焦/完成输入时自动保存，避免只改了文本却忘点「确定」
+                    // 导致首页一直「已暂停/未设置」且目标 App 读不到流地址。
                     var urlText by remember(uiState.streamUrl) { mutableStateOf(uiState.streamUrl) }
                     OutlinedTextField(
                             value = urlText,
@@ -271,14 +274,35 @@ fun SettingsScreen(viewModel: MainViewModel) {
                             label = { Text(stringResource(R.string.settings_stream_url)) },
                             placeholder = { Text(stringResource(R.string.settings_stream_url_hint)) },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth().padding(start = 36.dp, end = 4.dp),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                            modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 36.dp, end = 4.dp)
+                                    .onFocusChanged { focusState ->
+                                        if (!focusState.isFocused) {
+                                            val trimmed = urlText.trim()
+                                            if (trimmed != uiState.streamUrl) {
+                                                viewModel.setStreamUrl(trimmed)
+                                            }
+                                        }
+                                    },
+                            keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Uri,
+                                    imeAction = androidx.compose.ui.text.input.ImeAction.Done
+                            ),
+                            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                                    onDone = {
+                                        val trimmed = urlText.trim()
+                                        if (trimmed != uiState.streamUrl) {
+                                            viewModel.setStreamUrl(trimmed)
+                                        }
+                                    }
+                            )
                     )
 
-                    // Save button for URL (avoid saving on every keystroke)
-                    if (urlText != uiState.streamUrl) {
+                    // 显式保存按钮（与自动保存并存）
+                    if (urlText.trim() != uiState.streamUrl) {
                         TextButton(
-                                onClick = { viewModel.setStreamUrl(urlText) },
+                                onClick = { viewModel.setStreamUrl(urlText.trim()) },
                                 modifier = Modifier.align(Alignment.End).padding(end = 4.dp)
                         ) {
                             Text(stringResource(R.string.positive))

@@ -60,10 +60,14 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
 
     // State
     private volatile int mRotationDegrees = 0;
+    /** 水平镜像（绕 Y 轴 scale -1）。流模式补偿前置摄像头预览的二次镜像。 */
+    private volatile boolean mMirrorHorizontal = false;
     private volatile boolean mReleased = false;
     private boolean mInitialized = false;
     private volatile int mSurfaceWidth = 0;
     private volatile int mSurfaceHeight = 0;
+    /** 已渲染帧数，用于诊断「只有一帧」 */
+    private volatile long mDrawnFrameCount = 0;
 
     // Thread
     private HandlerThread mGLThread;
@@ -175,10 +179,28 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
         return mRotationDegrees;
     }
 
+    /**
+     * 水平镜像开关。微信/多数 App 前置预览会再镜像一次，
+     * 对 RTMP/OBS 画面需要在 GL 层先翻一次，抵消二次镜像。
+     */
+    public void setMirrorHorizontal(boolean mirror) {
+        mMirrorHorizontal = mirror;
+    }
+
+    public boolean isMirrorHorizontal() {
+        return mMirrorHorizontal;
+    }
+
+    public long getDrawnFrameCount() {
+        return mDrawnFrameCount;
+    }
+
     @Override
     public void onFrameAvailable(SurfaceTexture surfaceTexture) {
-        if (mReleased || !mInitialized)
+        if (mReleased || !mInitialized || mGLHandler == null)
             return;
+        // 必须 post 到 GL 线程：Ijk/解码器在自己的线程产帧，
+        // 若在回调线程直接 updateTexImage 会偶发只出一帧后卡住。
         mGLHandler.post(this::drawFrame);
     }
 
@@ -199,6 +221,13 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
                 if (err == EGL14.EGL_BAD_SURFACE || err == EGL14.EGL_BAD_NATIVE_WINDOW) {
                     mReleased = true;
                 }
+            } else {
+                long n = ++mDrawnFrameCount;
+                if (n == 1 || n == 30 || n == 150) {
+                    LogUtil.log("【CS】【GL】" + mTag + " 已渲染 " + n + " 帧"
+                            + " mirror=" + mMirrorHorizontal
+                            + " rot=" + mRotationDegrees);
+                }
             }
         } catch (Exception e) {
             LogUtil.log("【CS】【GL】" + mTag + " drawFrame 异常: " + e);
@@ -217,11 +246,19 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
         mInputSurfaceTexture.updateTexImage();
         mInputSurfaceTexture.getTransformMatrix(mSTMatrix);
 
-        // Update rotation matrix
-        if (mRotationDegrees == 0) {
-            Matrix.setIdentityM(mRotMatrix, 0);
-        } else {
+        // 旋转 + 可选水平镜像（先旋转再 scaleX=-1）
+        Matrix.setIdentityM(mRotMatrix, 0);
+        if (mRotationDegrees != 0) {
             Matrix.setRotateM(mRotMatrix, 0, -mRotationDegrees, 0, 0, 1.0f);
+        }
+        if (mMirrorHorizontal) {
+            // 水平翻转：绕中心 scale(-1, 1)
+            float[] mirror = new float[16];
+            Matrix.setIdentityM(mirror, 0);
+            mirror[0] = -1.0f;
+            float[] combined = new float[16];
+            Matrix.multiplyMM(combined, 0, mirror, 0, mRotMatrix, 0);
+            System.arraycopy(combined, 0, mRotMatrix, 0, 16);
         }
 
         // Query surface dimensions for viewport
@@ -424,9 +461,16 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
 
-        // Create input SurfaceTexture bound to the external texture
+        // Create input SurfaceTexture bound to the external texture.
+        // 关键：把 frame-available 回调绑到本 GL 线程 Handler。
+        // 无 Handler 时回调落在任意 binder 线程，Ijk 高频产帧时容易丢后续回调 → 只显示一帧。
         mInputSurfaceTexture = new SurfaceTexture(mTextureId);
-        mInputSurfaceTexture.setOnFrameAvailableListener(this);
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP
+                && mGLHandler != null) {
+            mInputSurfaceTexture.setOnFrameAvailableListener(this, mGLHandler);
+        } else {
+            mInputSurfaceTexture.setOnFrameAvailableListener(this);
+        }
         mInputSurface = new Surface(mInputSurfaceTexture);
 
         mVertexBuffer = GLHelper.createFloatBuffer(GLHelper.VERTICES);

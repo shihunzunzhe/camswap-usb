@@ -158,8 +158,36 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
             });
 
             // 明文流量 / INTERNET 权限预检（ExoPlayer 跑在被 Hook 的目标 App 进程里，受其网络策略约束，
-            // 这正是「VLC 能播、模块里黑屏」的头号原因）
+            // 这正是「VLC 能播、模块里黑屏」的头号原因）。NetworkPolicyBypass 会在流模式下 hook 放行明文。
+            try {
+                NetworkPolicyBypass.install(appContext.getClassLoader());
+            } catch (Throwable ignored) {
+            }
+            String preflight = NetworkPolicyBypass.preflight(appContext, source.streamUrl);
+            if (preflight != null) {
+                LogUtil.log("【CS】流预检警告: " + preflight);
+                toast(preflight);
+            }
+            // 兼容旧日志路径
             warnIfNetworkPolicyBlocks(appContext, source.streamUrl);
+
+            // RTMP 依赖 librtmp-jni.so（打包在 CamSwap APK，不在目标 App 的 lib 目录）。
+            // 目标进程直接 new RtmpClient() 会 UnsatisfiedLinkError → 黑屏。开流前先确保 so 已加载。
+            if (source.streamUrl != null
+                    && source.streamUrl.toLowerCase(java.util.Locale.ROOT).startsWith("rtmp")) {
+                boolean rtmpOk = ModuleNativeLoader.ensureRtmpJni(appContext);
+                if (!rtmpOk) {
+                    String msg = "RTMP native 库(librtmp-jni.so)加载失败——目标进程找不到 CamSwap 的 so。"
+                            + "请确认已安装 arm64 版 CamSwap，并授予目标 App 存储/网络权限后重试";
+                    LogUtil.log("【CS】" + msg);
+                    toast(msg);
+                    if (listener != null) {
+                        listener.onError(msg, null);
+                        listener.onPermanentFailure(msg);
+                    }
+                    return;
+                }
+            }
 
             MediaSource mediaSource = buildMediaSource(source);
             player.setMediaSource(mediaSource);
@@ -168,6 +196,13 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
 
             LogUtil.log("【CS】ExoPlayer 开始播放: " + source.streamUrl
                     + "（transport=" + source.transportHint + " autoReconnect=" + source.autoReconnect + "）");
+        } catch (UnsatisfiedLinkError ule) {
+            LogUtil.log("【CS】ExoPlayer native 库缺失: " + ule);
+            toast("native 库加载失败: " + ule.getMessage());
+            if (listener != null) {
+                listener.onError("native lib missing: " + ule.getMessage(), ule);
+                listener.onPermanentFailure("native lib missing");
+            }
         } catch (Exception e) {
             LogUtil.log("【CS】ExoPlayer 初始化失败: " + e);
             if (listener != null) {
@@ -190,14 +225,15 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
             return factory.createMediaSource(MediaItem.fromUri(uri));
         }
 
-        if ("rtmp".equalsIgnoreCase(scheme)) {
-            // Media3 的 RTMP 是 DataSource，配合 ProgressiveMediaSource 使用
+        if ("rtmp".equalsIgnoreCase(scheme) || "rtmps".equalsIgnoreCase(scheme)) {
+            // Media3 的 RTMP 是 DataSource，配合 ProgressiveMediaSource 使用。
+            // so 已在 openInternal 里通过 ModuleNativeLoader 预加载。
             try {
                 return new ProgressiveMediaSource.Factory(new RtmpDataSource.Factory())
                         .createMediaSource(MediaItem.fromUri(uri));
             } catch (Throwable t) {
                 LogUtil.log("【CS】RTMP DataSource 不可用: " + t);
-                throw new IllegalStateException("RTMP 不可用，请确认已打包 media3-datasource-rtmp", t);
+                throw new IllegalStateException("RTMP 不可用，请确认已打包 media3-datasource-rtmp 且 librtmp-jni.so 可加载", t);
             }
         }
 

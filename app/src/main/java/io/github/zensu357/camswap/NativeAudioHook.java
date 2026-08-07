@@ -61,7 +61,15 @@ public class NativeAudioHook {
             String mode = MicrophoneHandler.getMicHookModeStatic();
 
             if (ConfigManager.MIC_MODE_VIDEO_SYNC.equals(mode)) {
-                // 方案 C: 视频同步
+                // 方案 C: 视频同步 —— 流模式走 RTMP PCM 环形缓冲，本地模式走文件音轨
+                if (io.github.zensu357.camswap.utils.VideoManager.isStreamMode()) {
+                    if (StreamPcmBuffer.isActive()) {
+                        StreamPcmBuffer.read(buffer, 0, size, sampleRate, channels);
+                        return size;
+                    }
+                    java.util.Arrays.fill(buffer, 0, size, (byte) 0);
+                    return size;
+                }
                 long posMs = MicrophoneHandler.getVideoPlaybackPositionMsStatic();
 
                 if (!AudioDataProvider.isReady()) {

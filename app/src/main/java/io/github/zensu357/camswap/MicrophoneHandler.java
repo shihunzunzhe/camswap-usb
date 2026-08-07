@@ -148,16 +148,17 @@ public class MicrophoneHandler implements ICameraHandler {
     /**
      * 检查是否为视频同步模式，并确保视频音轨数据已加载。
      * 如果数据尚未就绪，触发异步加载并返回 false。
+     * <p>
+     * 流模式：改为从 {@link StreamPcmBuffer} 实时取 RTMP/网络流 PCM
+     * （由 {@link AudioTrackWriteHook} 旁路写入），不再降级静音。
      */
     private static boolean isVideoSyncMode() {
         if (!ConfigManager.MIC_MODE_VIDEO_SYNC.equals(getMicHookMode())) {
             return false;
         }
-        // Stream mode: video_sync is not supported (no local FD to extract audio).
-        // Degrade to mute and log.
         if (VideoManager.isStreamMode()) {
-            LogUtil.log("【CS】流模式下 video_sync 不可用，自动降级为静音");
-            return false;
+            // 流音轨：只要缓冲已激活就可用；未激活时返回 false → 本次填静音，等 Ijk onPrepared
+            return StreamPcmBuffer.isActive();
         }
         String videoPath = VideoManager.getCurrentVideoPath();
         if (videoPath == null)
@@ -171,6 +172,13 @@ public class MicrophoneHandler implements ICameraHandler {
             return false;
         }
         return true;
+    }
+
+    /** 流模式下 video_sync 是否应从 StreamPcmBuffer 取数。 */
+    private static boolean shouldUseStreamPcm() {
+        return VideoManager.isStreamMode()
+                && ConfigManager.MIC_MODE_VIDEO_SYNC.equals(getMicHookMode())
+                && StreamPcmBuffer.isActive();
     }
 
     /**
@@ -349,7 +357,9 @@ public class MicrophoneHandler implements ICameraHandler {
 
         logReadCall(result, methodTag);
 
-        if (isVideoSyncMode()) {
+        if (shouldUseStreamPcm()) {
+            StreamPcmBuffer.read(buffer, offset, result, p.sampleRate, p.channelCount);
+        } else if (isVideoSyncMode()) {
             long posMs = getVideoPlaybackPositionMs();
             AudioDataProvider.fillBytesAtPosition(buffer, offset, result,
                     p.sampleRate, p.channelCount, posMs);
@@ -370,7 +380,9 @@ public class MicrophoneHandler implements ICameraHandler {
 
         logReadCall(result, methodTag);
 
-        if (isVideoSyncMode()) {
+        if (shouldUseStreamPcm()) {
+            StreamPcmBuffer.readShorts(buffer, offset, result, p.sampleRate, p.channelCount);
+        } else if (isVideoSyncMode()) {
             long posMs = getVideoPlaybackPositionMs();
             AudioDataProvider.fillShortsAtPosition(buffer, offset, result,
                     p.sampleRate, p.channelCount, posMs);

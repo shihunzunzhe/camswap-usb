@@ -92,8 +92,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     targetAppsCount = configManager.targetPackages.size,
                     originalVideoName = configManager.getString(ConfigManager.KEY_ORIGINAL_VIDEO_NAME, null),
                     // Stream config
-                    mediaSourceType = configManager.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL),
-                    streamUrl = configManager.getString(ConfigManager.KEY_STREAM_URL, ""),
+                    mediaSourceType = configManager.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL).trim(),
+                    streamUrl = configManager.getString(ConfigManager.KEY_STREAM_URL, "").trim(),
                     streamAutoReconnect = configManager.getBoolean(ConfigManager.KEY_STREAM_AUTO_RECONNECT, true),
                     streamLocalFallback = configManager.getBoolean(ConfigManager.KEY_STREAM_LOCAL_FALLBACK, true),
                     streamTransportHint = configManager.getString(ConfigManager.KEY_STREAM_TRANSPORT_HINT, "auto"),
@@ -185,15 +185,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setMediaSourceType(type: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            configManager.setString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, type)
-            _uiState.update { it.copy(mediaSourceType = type) }
+            val normalized = type.trim()
+            configManager.setString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, normalized)
+            _uiState.update { it.copy(mediaSourceType = normalized) }
         }
     }
 
     fun setStreamUrl(url: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            configManager.setString(ConfigManager.KEY_STREAM_URL, url)
-            _uiState.update { it.copy(streamUrl = url) }
+            // 去掉首尾空白与意外换行，避免 isNotBlank 判断失败导致首页「未设置/已暂停」
+            val normalized = url.trim()
+            configManager.setString(ConfigManager.KEY_STREAM_URL, normalized)
+            _uiState.update { it.copy(streamUrl = normalized) }
         }
     }
 

@@ -155,7 +155,19 @@ dependencies {
     // media3-datasource-rtmp（传递依赖 io.antmedia:rtmp-client，含 .so）。
     // 之前反射查找的 androidx.media3.exoplayer.rtmp.RtmpMediaSource$Factory 在 Media3 中并不存在，
     // 导致 rtmp:// 必然降级到 ProgressiveMediaSource 并失败。
+    // 注意：目标进程里 Media3 RTMP 仍易因 so/明文策略失败；RTMP 主路径改走下方 IjkPlayer。
     implementation "androidx.media3:media3-datasource-rtmp:1.6.0"
+
+    // IjkPlayer —— 与 VCAMPRO 相同的 RTMP 取流引擎（FFmpeg 软解直出 Surface）。
+    // 实测：Media3 RtmpDataSource 在被 Hook 的目标进程里经常因 librtmp-jni / 明文策略黑屏，
+    // 而 Ijk 对 rtmp:// 更稳，且 so 可通过 ModuleNativeLoader 注入到目标进程。
+    implementation 'tv.danmaku.ijk.media:ijkplayer-java:0.8.8'
+    implementation 'tv.danmaku.ijk.media:ijkplayer-arm64:0.8.8'
+    implementation 'tv.danmaku.ijk.media:ijkplayer-armv7a:0.8.8'
+    implementation 'tv.danmaku.ijk.media:ijkplayer-x86_64:0.8.8'
+    // armv5 / x86 仅兼容老模拟器，体积小一并带上
+    implementation 'tv.danmaku.ijk.media:ijkplayer-armv5:0.8.8'
+    implementation 'tv.danmaku.ijk.media:ijkplayer-x86:0.8.8'
 
     // USB 采集卡 (UVC) —— saki4510t/UVCCamera 的维护分支，含 libusb/libuvc/libjpeg-turbo，
     // 提供 arm64-v8a / armeabi-v7a / x86 / x86_64 四套 .so，已发布到 Maven Central。

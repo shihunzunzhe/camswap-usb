@@ -4,9 +4,12 @@ import android.hardware.usb.UsbDevice;
 import android.os.ParcelFileDescriptor;
 
 import com.serenegiant.usb.UVCCamera;
+import com.serenegiant.usb.UVCControl;
 import com.serenegiant.usb.UVCParam;
+import com.serenegiant.usb.USBMonitor;
 
 import java.io.File;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
@@ -16,11 +19,15 @@ import io.github.zensu357.camswap.utils.LogUtil;
  * Root 免授权直连器：复现 {@code UVCCamera.open(UsbControlBlock)} 的核心调用
  * {@code nativeConnect(mNativePtr, fd, quirks)}，绕过 UsbManager 授权。
  *
- * <p><b>注意（历史坑）：</b>herohan UVCAndroid 1.0.13 的 blob 里根本没有
- * {@code nativeConnectFd} 这个方法（javap 反编译已核实），真正的私有 native 方法是
- * {@code private native int nativeConnect(long, int, int)}。早前误改为反射
- * {@code nativeConnectFd(long, int)} 会抛 {@link NoSuchMethodException}，被外层
- * try-catch 吞掉后返回 null，表现为「root direct-connect failed」——本类已改回正确签名。
+ * <p><b>注意（历史坑）：</b>
+ * <ul>
+ *   <li>herohan UVCAndroid 1.0.13 的 blob 里根本没有 {@code nativeConnectFd}，
+ *       真正的私有 native 方法是 {@code private native int nativeConnect(long, int, int)}。</li>
+ *   <li>{@code UVCCamera.startPreview()}/{@code stopPreview()} 都用
+ *       {@code if (mCtrlBlock != null)} 做守卫；root 直连若只调 nativeConnect、不装上
+ *       {@code mCtrlBlock}/{@code mControl}，则 {@code startPreview()} 会静默空返回，
+ *       表现为「通知栏 STREAMING ↔ 重连 来回跳、画面始终黑屏、native 帧数恒为 0」。</li>
+ * </ul>
  */
 public final class UsbRootConnector {
 
@@ -41,14 +48,12 @@ public final class UsbRootConnector {
 
     /**
      * 仅完成「连接」：root 放开设备节点 → 直接打开 fd → {@code nativeConnect} →
+     * 装上 {@code mCtrlBlock}/{@code mControl}（让后续 {@code startPreview} 真正生效）→
      * {@code updateSupportedFormats}。返回一个已连接、但<b>尚未设置分辨率、尚未开预览</b>的
      * {@link Connection}。
      *
-     * <p>分辨率协商（必须从 {@link UVCCamera#getSupportedSizeList()} 里挑设备真实支持的一档）
-     * 与开预览由调用方（{@code UsbCaptureService.startUvcViaRoot}）负责，逻辑与标准授权路径
-     * {@code startUvc} 完全一致——早前 root 路径把配置里的 720p 硬塞给 native、且把
-     * {@code FRAME_FORMAT_MJPEG(=1)} 误当成 {@code Size.type}（native 需要 {@code UVC_VS_FRAME_MJPEG=7}），
-     * 导致 native 开了预览却一帧都收不到，触发无限「开流→无帧看门狗→重连」黑屏循环。
+     * <p>分辨率协商与开预览由调用方（{@code UsbCaptureService.startUvcViaRoot}）负责，
+     * 逻辑与标准授权路径 {@code startUvc} 对齐。
      */
     public static Connection connect(UsbDevice device) {
         if (device == null) { log("参数为空"); return null; }
@@ -84,15 +89,81 @@ public final class UsbRootConnector {
                 pfd.close();
                 return null;
             }
+
+            // 关键：把 open() 在 nativeConnect 成功后做的 Java 侧状态补齐。
+            // 缺 mCtrlBlock → startPreview()/stopPreview() 直接 return，native 一帧都不会出。
+            // 缺 mControl   → isOpened() 恒为 false（诊断/状态会误导）。
+            if (!installOpenState(camera, device, ptr)) {
+                log("installOpenState 失败——startPreview 仍可能空转，放弃 root 直连");
+                camera.destroy();
+                pfd.close();
+                return null;
+            }
+
             // 刷新设备上报的支持格式，供调用方 getSupportedSizeList() 挑选真实可用分辨率
             invokeUpdateSupportedFormats(camera);
-            log("root 直连连接成功（未设分辨率/未开预览）: " + node);
+            log("root 直连连接成功（未设分辨率/未开预览）: " + node
+                    + " isOpened=" + camera.isOpened()
+                    + " hasCtrlBlock=" + hasCtrlBlock(camera));
             return new Connection(camera, pfd);
         } catch (Throwable t) {
             log("root 直连异常: " + android.util.Log.getStackTraceString(t));
             if (camera != null) { try { camera.destroy(); } catch (Throwable ignored) {} }
             if (pfd != null) { try { pfd.close(); } catch (Throwable ignored) {} }
             return null;
+        }
+    }
+
+    /**
+     * 模拟 {@code UVCCamera.open()} 在 nativeConnect 成功后的 Java 状态：
+     * <ol>
+     *   <li>{@code mControl = new UVCControl(nativeGetControl(ptr))} —— 让 {@code isOpened()} 为 true；</li>
+     *   <li>{@code mCtrlBlock = 未 open 的 UsbControlBlock 哨兵} —— 让 {@code startPreview()}
+     *       真正调用到 {@code nativeStartPreview}。哨兵不持有 UsbDeviceConnection，
+     *       {@code close()} 时因 mConnection==null 是空操作，不会误关我们自己的 pfd。</li>
+     * </ol>
+     */
+    private static boolean installOpenState(UVCCamera camera, UsbDevice device, long ptr) {
+        try {
+            // mControl
+            Method nativeGetControl = UVCCamera.class.getDeclaredMethod("nativeGetControl", long.class);
+            nativeGetControl.setAccessible(true);
+            Object controlPtrObj = nativeGetControl.invoke(camera, ptr);
+            long controlPtr = controlPtrObj instanceof Long ? (Long) controlPtrObj : 0L;
+            if (controlPtr == 0L) {
+                log("nativeGetControl 返回 0——设备控制接口异常，继续尝试仅装 mCtrlBlock");
+            } else {
+                UVCControl control = new UVCControl(controlPtr);
+                Field mControl = UVCCamera.class.getDeclaredField("mControl");
+                mControl.setAccessible(true);
+                mControl.set(camera, control);
+                log("已装 mControl ptr=" + controlPtr);
+            }
+
+            // mCtrlBlock 哨兵：构造函数是 USBMonitor.UsbControlBlock(USBMonitor, UsbDevice) private
+            Constructor<?> ctor = USBMonitor.UsbControlBlock.class
+                    .getDeclaredConstructor(USBMonitor.class, UsbDevice.class);
+            ctor.setAccessible(true);
+            // monitor 传 null：WeakReference 允许；我们不会对这个 block 调 open()/getFileDescriptor()
+            Object ctrlBlock = ctor.newInstance(null, device);
+            Field mCtrlBlock = UVCCamera.class.getDeclaredField("mCtrlBlock");
+            mCtrlBlock.setAccessible(true);
+            mCtrlBlock.set(camera, ctrlBlock);
+            log("已装 mCtrlBlock 哨兵（未 open 的 UsbControlBlock，仅用于放开 startPreview 守卫）");
+            return true;
+        } catch (Throwable t) {
+            log("installOpenState 异常: " + android.util.Log.getStackTraceString(t));
+            return false;
+        }
+    }
+
+    private static boolean hasCtrlBlock(UVCCamera camera) {
+        try {
+            Field f = UVCCamera.class.getDeclaredField("mCtrlBlock");
+            f.setAccessible(true);
+            return f.get(camera) != null;
+        } catch (Throwable t) {
+            return false;
         }
     }
 

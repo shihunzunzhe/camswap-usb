@@ -491,14 +491,25 @@ public class VideoManager {
     public static boolean isStreamMode() {
         ConfigManager config = getConfig();
         String type = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
-        return ConfigManager.MEDIA_SOURCE_STREAM.equals(type);
+        if (type == null) {
+            return false;
+        }
+        type = type.trim();
+        return ConfigManager.MEDIA_SOURCE_STREAM.equals(type)
+                || "rtmp".equalsIgnoreCase(type)
+                || "network".equalsIgnoreCase(type);
     }
 
     /** Whether current config is set to USB capture card (UVC) mode. */
     public static boolean isUsbCaptureMode() {
         ConfigManager config = getConfig();
         String type = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
-        return ConfigManager.MEDIA_SOURCE_USB.equals(type);
+        if (type == null) {
+            return false;
+        }
+        type = type.trim();
+        return ConfigManager.MEDIA_SOURCE_USB.equals(type)
+                || "usb".equalsIgnoreCase(type);
     }
 
     /** Whether there is a usable media source (local file or stream URL). */
@@ -515,12 +526,15 @@ public class VideoManager {
         ConfigManager config = getConfig();
         String sourceType = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
 
-        if (ConfigManager.MEDIA_SOURCE_USB.equals(sourceType)) {
+        if (isUsbCaptureMode()) {
             return MediaSourceDescriptor.usbCapture(config.getUsbCaptureConfig()).build();
         }
 
-        if (ConfigManager.MEDIA_SOURCE_STREAM.equals(sourceType)) {
+        if (isStreamMode()) {
             String streamUrl = config.getString(ConfigManager.KEY_STREAM_URL, "");
+            if (streamUrl != null) {
+                streamUrl = streamUrl.trim();
+            }
             boolean autoReconnect = config.getBoolean(ConfigManager.KEY_STREAM_AUTO_RECONNECT, true);
             boolean localFallback = config.getBoolean(ConfigManager.KEY_STREAM_LOCAL_FALLBACK, true);
             String transportHint = config.getString(ConfigManager.KEY_STREAM_TRANSPORT_HINT, "auto");

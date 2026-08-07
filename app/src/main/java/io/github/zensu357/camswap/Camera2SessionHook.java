@@ -368,12 +368,22 @@ public final class Camera2SessionHook {
             pendingPlayback = true;
             return;
         }
-        // Skip redundant init when surfaces haven't changed since last call
-        if (readerSurface == lastInitReader && readerSurface1 == lastInitReader1
-                && previewSurface == lastInitPreview && previewSurface1 == lastInitPreview1) {
+        // Skip redundant init when surfaces haven't changed since last call.
+        // 例外：流模式下若 streamBackend 已被释放/尚未创建（切源、releaseCamera2 后），
+        // 即使 surface 引用相同也必须重新 init，否则微信等会一直黑屏。
+        boolean surfacesUnchanged = readerSurface == lastInitReader
+                && readerSurface1 == lastInitReader1
+                && previewSurface == lastInitPreview
+                && previewSurface1 == lastInitPreview1;
+        boolean streamNeedsRebuild = VideoManager.isStreamMode()
+                && !playerManager.hasActiveStreamBackend();
+        if (surfacesUnchanged && !streamNeedsRebuild) {
             LogUtil.log("【CS】跳过重复 startPlayback：surface 未变化");
             pendingPlayback = false;
             return;
+        }
+        if (streamNeedsRebuild) {
+            LogUtil.log("【CS】流模式 backend 缺失，强制重建播放（surface 可能未变）");
         }
         lastInitReader = readerSurface;
         lastInitReader1 = readerSurface1;

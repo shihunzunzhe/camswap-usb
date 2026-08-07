@@ -48,16 +48,55 @@ fun HomeScreen(
     val mainUiState by mainViewModel.uiState.collectAsState()
     val mediaUiState by mediaViewModel.uiState.collectAsState()
 
-    // 根据替换模式判断是否有媒体资源和是否已选中
-    val hasMedia = mediaUiState.videos.isNotEmpty()
-    val isSelected = !mediaUiState.selectedVideoName.isNullOrEmpty()
-    val isWorking = mainUiState.hasPermission && hasMedia && isSelected && !mainUiState.isModuleDisabled
+    // 媒体源类型：本地视频 / 网络流 / USB 采集卡。流与 USB 不依赖本地视频列表。
+    val sourceType = mainUiState.mediaSourceType.trim()
+    val isStreamMode = sourceType == io.github.zensu357.camswap.ConfigManager.MEDIA_SOURCE_STREAM
+            || sourceType.equals("rtmp", ignoreCase = true)
+            || sourceType.equals("network", ignoreCase = true)
+    val isUsbMode = sourceType == io.github.zensu357.camswap.ConfigManager.MEDIA_SOURCE_USB
+            || sourceType.equals("usb", ignoreCase = true)
+    val streamUrl = mainUiState.streamUrl.trim()
+    val streamReady = isStreamMode && streamUrl.isNotEmpty()
+    val usbReady = isUsbMode
 
-    // Get display name (视频或图片)
+    // 本地模式：有视频列表 + 已选中；流/USB：不依赖本地视频
+    // 旧逻辑只看 videos → 切 RTMP 后恒 false → 误显示「已暂停/未设置」
+    val hasMedia = when {
+        isStreamMode -> streamReady
+        isUsbMode -> usbReady
+        else -> mediaUiState.videos.isNotEmpty()
+    }
+    val isSelected = when {
+        isStreamMode -> streamReady
+        isUsbMode -> usbReady
+        else -> !mediaUiState.selectedVideoName.isNullOrEmpty()
+    }
+    // 流/USB 的 hook 生效不依赖本机存储权限（配置已由设置页写入）；
+    // 本地模式仍要求存储权限以便读视频文件。
+    val permissionOkForMode = when {
+        isStreamMode || isUsbMode -> true
+        else -> mainUiState.hasPermission
+    }
+    val isWorking = permissionOkForMode && hasMedia && isSelected && !mainUiState.isModuleDisabled
+
+    // Get display name (视频 / 网络流 / USB)
     val displayMediaName: String? = run {
-        val selectedItem = mediaUiState.videos.find { it.name == mediaUiState.selectedVideoName }
-        val raw = selectedItem?.displayName ?: mediaUiState.selectedVideoName
-        if (raw == "Cam.mp4") mainUiState.originalVideoName ?: raw else raw
+        when {
+            isStreamMode -> {
+                if (streamUrl.isEmpty()) stringResource(R.string.status_value_stream)
+                else {
+                    val schemeEnd = streamUrl.indexOf("://").let { if (it < 0) 0 else it + 3 }
+                    val slash = streamUrl.indexOf('/', schemeEnd).let { if (it < 0) streamUrl.length else it }
+                    streamUrl.substring(0, minOf(slash + 1, streamUrl.length)) + "…"
+                }
+            }
+            isUsbMode -> stringResource(R.string.status_value_usb)
+            else -> {
+                val selectedItem = mediaUiState.videos.find { it.name == mediaUiState.selectedVideoName }
+                val raw = selectedItem?.displayName ?: mediaUiState.selectedVideoName
+                if (raw == "Cam.mp4") mainUiState.originalVideoName ?: raw else raw
+            }
+        }
     }
 
     // Get selected audio name
@@ -73,10 +112,11 @@ fun HomeScreen(
     ) {
         StatusCard(
             isXposedActive = mainUiState.isXposedActive,
-            hasPermission = mainUiState.hasPermission,
+            hasPermission = if (isStreamMode || isUsbMode) true else mainUiState.hasPermission,
             hasMedia = hasMedia,
             isSelected = isSelected,
             isWorking = isWorking,
+            isModuleDisabled = mainUiState.isModuleDisabled,
             isRandomPlay = mainUiState.enableRandomPlay,
             mediaSourceName = displayMediaName,
             enableMicHook = mainUiState.enableMicHook,
@@ -84,7 +124,8 @@ fun HomeScreen(
             selectedAudioName = displayAudioName,
             playVideoSound = mainUiState.playVideoSound,
             notificationControlEnabled = mainUiState.notificationControlEnabled,
-            onPermissionRequest = onPermissionRequest
+            onPermissionRequest = onPermissionRequest,
+            onEnableModule = { mainViewModel.setModuleDisabled(false) }
         )
 
         VersionCard(
@@ -170,6 +211,7 @@ fun StatusCard(
     hasMedia: Boolean,
     isSelected: Boolean,
     isWorking: Boolean,
+    isModuleDisabled: Boolean = false,
     isRandomPlay: Boolean,
     mediaSourceName: String?,
     enableMicHook: Boolean,
@@ -178,19 +220,28 @@ fun StatusCard(
     playVideoSound: Boolean,
     notificationControlEnabled: Boolean,
     isImageMode: Boolean = false, // Deprecated, always false
-    onPermissionRequest: () -> Unit
+    onPermissionRequest: () -> Unit,
+    onEnableModule: () -> Unit = {}
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val noMediaStr = stringResource(R.string.status_no_video)
     val noSelectionStr = stringResource(R.string.status_no_selection)
     val noMediaHint = stringResource(R.string.status_add_video_hint)
     val noSelectionHint = stringResource(R.string.status_select_video_hint)
+    // 注意：以前 isModuleDisabled 时 hasMedia/isSelected 仍可能为 true，会落到「已暂停」
+    // 让用户以为只是暂停，其实 hook 已全部关闭。这里单独成态。
     val (backgroundColor, textColor, statusText, statusIcon) = when {
         !isXposedActive -> Quadruple(
             colorScheme.errorContainer,
             colorScheme.onErrorContainer,
             stringResource(R.string.status_module_inactive),
             Icons.Default.Error
+        )
+        isModuleDisabled -> Quadruple(
+            colorScheme.errorContainer,
+            colorScheme.onErrorContainer,
+            stringResource(R.string.status_module_disabled),
+            Icons.Default.Pause
         )
         !hasPermission -> Quadruple(
             colorScheme.errorContainer,
@@ -267,6 +318,23 @@ fun StatusCard(
                     fontSize = 14.sp,
                     color = textColor.copy(alpha = 0.8f)
                 )
+            } else if (isModuleDisabled) {
+                Text(
+                    text = stringResource(R.string.status_module_disabled_hint),
+                    fontSize = 14.sp,
+                    color = textColor.copy(alpha = 0.8f)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = onEnableModule,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colorScheme.error,
+                        contentColor = colorScheme.onError
+                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text(stringResource(R.string.status_enable_module), fontSize = 14.sp)
+                }
             } else if (!hasPermission) {
                 Button(
                     onClick = onPermissionRequest,

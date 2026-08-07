@@ -24,6 +24,9 @@
     <string name="status_no_selection">No Video Selected</string>
     <string name="status_working">Active</string>
     <string name="status_paused">Paused</string>
+    <string name="status_module_disabled">Module Disabled</string>
+    <string name="status_module_disabled_hint">「Disable Module」is on in Settings — all hooks are off. Tap below to re-enable.</string>
+    <string name="status_enable_module">Re-enable Module</string>
     <string name="status_label_video">Source</string>
     <string name="status_label_play_mode">Mode</string>
     <string name="status_label_mic">Mic</string>
@@ -149,7 +152,7 @@
     <string name="settings_media_source_local">Local File</string>
     <string name="settings_media_source_stream">Network Stream</string>
     <string name="settings_stream_url">Stream URL</string>
-    <string name="settings_stream_url_hint">Enter rtsp:// rtmp:// http:// stream URL</string>
+    <string name="settings_stream_url_hint">rtmp:// (Ijk preferred) / rtsp:// / http(s)://</string>
     <string name="settings_stream_auto_reconnect">Auto Reconnect</string>
     <string name="settings_stream_auto_reconnect_desc">Automatically reconnect on stream disconnect</string>
     <string name="settings_stream_local_fallback">Local Fallback</string>

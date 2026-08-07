@@ -815,6 +815,15 @@ public class UsbCaptureService extends Service {
             } catch (Throwable t) {
                 log("setFrameCallback 失败（不影响预览，仅少一路诊断）: " + t);
             }
+            // startPreview 在 UVCCamera 内部以 mCtrlBlock!=null 为守卫；
+            // UsbRootConnector 必须已装上哨兵，否则这里会静默空返回 → 黑屏 + 看门狗重连。
+            boolean opened = safeIsOpened(camera);
+            log("root 即将 startPreview: isOpened=" + opened
+                    + " preview=" + describeSize(actual)
+                    + " primarySurface.valid=" + primary.isValid());
+            if (!opened) {
+                log("root 警告：isOpened=false（mControl 未装上），startPreview 可能不会真正出帧");
+            }
             camera.startPreview();
             log("root startPreview 已调用，等待首帧… 若 6s 内无帧看门狗会打印 native/宿主帧数");
 
