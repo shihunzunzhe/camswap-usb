@@ -42,13 +42,15 @@ public class ConfigManager {
     public static final String KEY_SELECTED_IMAGE = "selected_image";
     public static final String KEY_REPLACE_MODE = "replace_mode";
     public static final String KEY_ENABLE_MIC_HOOK = "enable_mic_hook";
-    public static final String KEY_MIC_HOOK_MODE = "mic_hook_mode"; // "mute" | "replace" | "video_sync"
+    public static final String KEY_MIC_HOOK_MODE = "mic_hook_mode"; // "mute" | "replace" | "video_sync" | "stream"
     public static final String KEY_SELECTED_AUDIO = "selected_audio"; // 音频文件名
     public static final String KEY_NOTIFICATION_CONTROL_ENABLED = "notification_control_enabled";
     public static final String KEY_OVERLAY_CONTROL_ENABLED = "overlay_control_enabled";
     public static final String MIC_MODE_MUTE = "mute";
     public static final String MIC_MODE_REPLACE = "replace";
     public static final String MIC_MODE_VIDEO_SYNC = "video_sync";
+    /** 仅推流音频：麦克风只输出直播推流(RTMP/网络流)的声音，屏蔽真实麦克风；未推流时静音。 */
+    public static final String MIC_MODE_STREAM = "stream";
     public static final String REPLACE_MODE_VIDEO = "video";
     public static final String REPLACE_MODE_IMAGE = "image";
     public static final String KEY_VIDEO_ROTATION_OFFSET = "video_rotation_offset"; // 视频旋转偏移角度

@@ -69,6 +69,8 @@
     <string name="mic_mode_replace_desc">注入自定义音频文件（放置 Mic.mp3 到 DCIM/Camera1/）</string>
     <string name="mic_mode_video_sync">视频同步</string>
     <string name="mic_mode_video_sync_desc">播放当前替换视频的原声音轨</string>
+    <string name="mic_mode_stream">仅推流音频</string>
+    <string name="mic_mode_stream_desc">麦克风只输出直播推流(RTMP)的声音，屏蔽真实麦克风；未推流时静音</string>
     <string name="settings_random_play">随机播放</string>
     <string name="settings_random_play_desc">从视频列表中随机选择视频播放</string>
     <string name="settings_category_advanced">高级设置</string>

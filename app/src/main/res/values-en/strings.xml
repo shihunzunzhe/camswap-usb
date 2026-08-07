@@ -69,6 +69,8 @@
     <string name="mic_mode_replace_desc">Inject custom audio file (Put Mic.mp3 in DCIM/Camera1/)</string>
     <string name="mic_mode_video_sync">Video Sync</string>
     <string name="mic_mode_video_sync_desc">Play audio track of current video</string>
+    <string name="mic_mode_stream">Stream Audio Only</string>
+    <string name="mic_mode_stream_desc">Mic outputs only the live stream (RTMP) audio, real mic blocked; silent when no stream</string>
     <string name="settings_random_play">Random Play</string>
     <string name="settings_random_play_desc">Randomly play from video list</string>
     <string name="settings_category_advanced">Advanced Settings</string>

@@ -53,50 +53,55 @@ public class NativeAudioHook {
      */
     public static int fillNativeBuffer(byte[] buffer, int size, int sampleRate, int channels) {
         try {
-            // 检查开关
+            // 检查总开关
             if (!MicrophoneHandler.isMicHookEnabledStatic()) {
-                return -1; // 不替换
+                return -1; // 不替换，保留真实录音
             }
 
             String mode = MicrophoneHandler.getMicHookModeStatic();
+            boolean streamModeActive =
+                    io.github.zensu357.camswap.utils.VideoManager.isStreamMode();
+            // 与 Java AudioRecord 路径共用同一决策，行为一致
+            MicAudioRouter.Source src = MicAudioRouter.decide(
+                    true, mode, streamModeActive, StreamPcmBuffer.isActive());
 
-            if (ConfigManager.MIC_MODE_VIDEO_SYNC.equals(mode)) {
-                // 方案 C: 视频同步 —— 流模式走 RTMP PCM 环形缓冲，本地模式走文件音轨
-                if (io.github.zensu357.camswap.utils.VideoManager.isStreamMode()) {
-                    if (StreamPcmBuffer.isActive()) {
-                        StreamPcmBuffer.read(buffer, 0, size, sampleRate, channels);
+            switch (src) {
+                case STREAM_PCM:
+                    // 仅推流音频 / 流模式视频同步：注入 RTMP 音频
+                    StreamPcmBuffer.read(buffer, 0, size, sampleRate, channels);
+                    return size;
+
+                case STREAM_SILENCE:
+                    // 推流音频尚未就绪 → 静音，绝不透传真实麦克风
+                    java.util.Arrays.fill(buffer, 0, size, (byte) 0);
+                    return size;
+
+                case VIDEO_SYNC_FILE: {
+                    // 本地视频同步音轨
+                    long posMs = MicrophoneHandler.getVideoPlaybackPositionMsStatic();
+                    if (!AudioDataProvider.isReady()) {
+                        MicrophoneHandler.preloadAudioAsyncStatic();
+                        java.util.Arrays.fill(buffer, 0, size, (byte) 0);
                         return size;
                     }
-                    java.util.Arrays.fill(buffer, 0, size, (byte) 0);
-                    return size;
-                }
-                long posMs = MicrophoneHandler.getVideoPlaybackPositionMsStatic();
-
-                if (!AudioDataProvider.isReady()) {
-                    MicrophoneHandler.preloadAudioAsyncStatic();
-                    // 数据未就绪，填充静音
-                    java.util.Arrays.fill(buffer, 0, size, (byte) 0);
+                    AudioDataProvider.fillBytesAtPosition(buffer, 0, size, sampleRate, channels, posMs);
                     return size;
                 }
 
-                AudioDataProvider.fillBytesAtPosition(buffer, 0, size, sampleRate, channels, posMs);
-                return size;
+                case REPLACE_FILE:
+                    // 本地替换音频文件
+                    if (!AudioDataProvider.isReady()) {
+                        MicrophoneHandler.preloadAudioAsyncStatic();
+                        java.util.Arrays.fill(buffer, 0, size, (byte) 0);
+                        return size;
+                    }
+                    AudioDataProvider.fillBytes(buffer, 0, size, sampleRate, channels);
+                    return size;
 
-            } else if (ConfigManager.MIC_MODE_REPLACE.equals(mode)) {
-                // 方案 B: 替换模式
-                if (!AudioDataProvider.isReady()) {
-                    MicrophoneHandler.preloadAudioAsyncStatic();
+                case SILENCE:
+                default:
                     java.util.Arrays.fill(buffer, 0, size, (byte) 0);
                     return size;
-                }
-
-                AudioDataProvider.fillBytes(buffer, 0, size, sampleRate, channels);
-                return size;
-
-            } else {
-                // 方案 A: 静音
-                java.util.Arrays.fill(buffer, 0, size, (byte) 0);
-                return size;
             }
 
         } catch (Throwable t) {

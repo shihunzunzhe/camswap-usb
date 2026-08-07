@@ -180,6 +180,12 @@ fun SettingsScreen(viewModel: MainViewModel) {
                             selected = uiState.micHookMode == "video_sync",
                             onClick = { viewModel.setMicHookMode("video_sync") }
                     )
+                    MicModeOption(
+                            title = stringResource(R.string.mic_mode_stream),
+                            description = stringResource(R.string.mic_mode_stream_desc),
+                            selected = uiState.micHookMode == "stream",
+                            onClick = { viewModel.setMicHookMode("stream") }
+                    )
                 }
             }
 

@@ -45,6 +45,9 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
     private static final int MAX_RECONNECT_ATTEMPTS = 10;
     private static final long BASE_RECONNECT_DELAY_MS = 3000L;
 
+    /** 是否已彻底释放（区分「重连前的临时释放」与「最终释放」，决定是否停流音频缓冲）。 */
+    private volatile boolean released = false;
+
     public ExoPlayerBackend() {
     }
 
@@ -62,6 +65,7 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
     public void open(MediaSourceDescriptor source) {
         this.currentSource = source;
         this.reconnectAttempts = 0;
+        this.released = false;
         ensurePlayerThread();
         playerHandler.post(() -> openInternal(source));
     }
@@ -106,6 +110,9 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
                     LogUtil.log("【CS】ExoPlayer 状态: " + stateName(playbackState));
                     if (playbackState == Player.STATE_READY) {
                         reconnectAttempts = 0;
+                        // 旁路解码 PCM → StreamPcmBuffer，供麦克风 Hook 在「仅推流音频/流视频同步」
+                        // 模式下取流音频（覆盖 RTMP 回退到 Exo，以及 RTSP/HLS/DASH 等非 Ijk 流）。
+                        registerStreamAudioCapture();
                         if (listener != null) listener.onReady();
                     } else if (playbackState == Player.STATE_ENDED) {
                         if (listener != null) listener.onCompletion();
@@ -356,10 +363,33 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
         }, delay);
     }
 
+    /**
+     * 注册 ExoPlayer 的 audioSession 到 {@link AudioTrackWriteHook}，并确保
+     * {@link StreamPcmBuffer} 就绪。ExoPlayer 内部同样通过 {@code AudioTrack.write}
+     * 输出解码 PCM，被监视后即可旁路进环形缓冲供麦克风替换。
+     * <p>真实采样率/声道在首帧 {@code AudioTrack.write} 时由 hook 校正，这里先给常见直播默认值。
+     */
+    private void registerStreamAudioCapture() {
+        try {
+            if (player == null) return;
+            int sid = player.getAudioSessionId();
+            if (sid != androidx.media3.common.C.AUDIO_SESSION_ID_UNSET && sid != 0) {
+                AudioTrackWriteHook.watchSession(sid);
+                if (!StreamPcmBuffer.isActive()) {
+                    StreamPcmBuffer.start(44100, 2);
+                }
+                LogUtil.log("【CS】ExoPlayer audioSessionId=" + sid + " → StreamPcmBuffer 已就绪");
+            }
+        } catch (Throwable t) {
+            LogUtil.log("【CS】ExoPlayer 注册 audioSession 失败: " + t);
+        }
+    }
+
     @Override
     public void restart() {
         if (currentSource == null) return;
         reconnectAttempts = 0;
+        released = false;
         postOnPlayerThread(() -> openInternal(currentSource));
     }
 
@@ -374,6 +404,7 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
 
     @Override
     public void release() {
+        released = true;
         CountDownLatch releaseLatch = new CountDownLatch(1);
         if (playerHandler != null) {
             playerHandler.post(() -> {
@@ -408,12 +439,21 @@ public final class ExoPlayerBackend implements SurfacePlayerBackend {
     private void releasePlayerInternal() {
         if (player != null) {
             try {
+                AudioTrackWriteHook.unwatchSession(player.getAudioSessionId());
+            } catch (Throwable ignored) {
+            }
+            try {
                 player.stop();
                 player.release();
             } catch (Exception e) {
                 LogUtil.log("【CS】ExoPlayer release 异常: " + e);
             }
             player = null;
+        }
+        // 仅在「最终释放」时停缓冲；重连前的临时释放保留缓冲，避免麦克风断音
+        if (released) {
+            StreamPcmBuffer.stop();
+            AudioTrackWriteHook.clear();
         }
     }
 

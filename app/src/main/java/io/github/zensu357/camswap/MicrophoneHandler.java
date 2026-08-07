@@ -174,11 +174,15 @@ public class MicrophoneHandler implements ICameraHandler {
         return true;
     }
 
-    /** 流模式下 video_sync 是否应从 StreamPcmBuffer 取数。 */
+    /**
+     * 是否应从 {@link StreamPcmBuffer} 取推流音频。
+     * <p>覆盖两种意图：{@code stream}（仅推流音频）与流模式下的 {@code video_sync}。
+     * 缓冲未就绪时返回 false，由调用方退化为静音——保证真实麦克风永不泄露。
+     * 决策集中在 {@link MicAudioRouter}，与 {@link NativeAudioHook} 保持一致。
+     */
     private static boolean shouldUseStreamPcm() {
-        return VideoManager.isStreamMode()
-                && ConfigManager.MIC_MODE_VIDEO_SYNC.equals(getMicHookMode())
-                && StreamPcmBuffer.isActive();
+        return MicAudioRouter.usesStreamPcm(isMicHookEnabled(), getMicHookMode(),
+                VideoManager.isStreamMode(), StreamPcmBuffer.isActive());
     }
 
     /**

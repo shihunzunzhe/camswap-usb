@@ -88,7 +88,8 @@ public final class MediaPlayerManager {
 
     /**
      * 流播放音量：play_video_sound 开 → 1；
-     * 或 mic hook 为 video_sync → 1（保证 PCM 旁路非零）；
+     * 或 mic hook 为 video_sync / stream（仅推流音频）→ 1
+     * （保证解码 PCM 满幅写入 AudioTrack，供麦克风旁路捕获，否则 Exo 侧会捕到静音）；
      * 否则 0。
      */
     private static float resolveStreamVolume() {
@@ -97,10 +98,13 @@ public final class MediaPlayerManager {
             if (cfg.getBoolean(ConfigManager.KEY_PLAY_VIDEO_SOUND, false)) {
                 return 1.0f;
             }
-            if (cfg.getBoolean(ConfigManager.KEY_ENABLE_MIC_HOOK, false)
-                    && ConfigManager.MIC_MODE_VIDEO_SYNC.equals(
-                            cfg.getString(ConfigManager.KEY_MIC_HOOK_MODE, ConfigManager.MIC_MODE_MUTE))) {
-                return 1.0f;
+            if (cfg.getBoolean(ConfigManager.KEY_ENABLE_MIC_HOOK, false)) {
+                String mode = cfg.getString(
+                        ConfigManager.KEY_MIC_HOOK_MODE, ConfigManager.MIC_MODE_MUTE);
+                if (ConfigManager.MIC_MODE_VIDEO_SYNC.equals(mode)
+                        || ConfigManager.MIC_MODE_STREAM.equals(mode)) {
+                    return 1.0f;
+                }
             }
         } catch (Throwable ignored) {
         }
