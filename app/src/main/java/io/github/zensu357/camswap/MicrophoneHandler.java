@@ -53,6 +53,14 @@ public class MicrophoneHandler implements ICameraHandler {
     // 只打印一次流注入格式（目标 AudioRecord 与流缓冲的 rate/ch/编码），便于核实是否格式对齐
     private static final AtomicBoolean streamFormatLogged = new AtomicBoolean(false);
 
+    // 交付限流器：把注入的真实音频按 1 倍实时限量，避免目标 App 快读造成「快放」
+    private static final StreamRatePacer STREAM_RATE_PACER = new StreamRatePacer();
+
+    private static int bytesPerSample(int enc) {
+        return enc == AudioFormat.ENCODING_PCM_FLOAT ? 4
+                : enc == AudioFormat.ENCODING_PCM_8BIT ? 1 : 2;
+    }
+
     /**
      * 存储每个 AudioRecord 实例的构造参数
      * 使用 ConcurrentHashMap 防止 GC 过早回收导致参数丢失，
@@ -196,7 +204,6 @@ public class MicrophoneHandler implements ICameraHandler {
      */
     private static void fillStreamInto(byte[] dst, int offset, int n, AudioRecordParams p) {
         logStreamFormatOnce(p);
-        logStreamReadPattern(n); // 诊断：目标 App 读取大小与间隔（判断突发/连续）
         int enc = p.audioFormat;
         int bytesPerSample = enc == AudioFormat.ENCODING_PCM_FLOAT ? 4
                 : enc == AudioFormat.ENCODING_PCM_8BIT ? 1 : 2;
@@ -676,11 +683,12 @@ public class MicrophoneHandler implements ICameraHandler {
         hookMethod(classLoader, "android.media.AudioRecord", "read",
                 new Class<?>[] { ByteBuffer.class, int.class }, chain -> {
                     Object[] args = toArgs(chain.getArgs());
+                    ByteBuffer buf = args[0] instanceof ByteBuffer ? (ByteBuffer) args[0] : null;
+                    int posBefore = buf != null ? buf.position() : 0;
                     Object result = chain.proceed(args);
-                    replaceByteBufferResult(chain.getThisObject(),
-                            args[0] instanceof ByteBuffer ? (ByteBuffer) args[0] : null,
-                            intResult(result), "ByteBuffer");
-                    return result;
+                    int r = intResult(result);
+                    int newR = replaceByteBufferResult(chain.getThisObject(), buf, posBefore, r, "ByteBuffer");
+                    return newR == r ? result : Integer.valueOf(newR);
                 }, "AudioRecord.read(ByteBuffer, int)");
     }
 
@@ -699,11 +707,12 @@ public class MicrophoneHandler implements ICameraHandler {
         hookMethod(classLoader, "android.media.AudioRecord", "read",
                 new Class<?>[] { ByteBuffer.class, int.class, int.class }, chain -> {
                     Object[] args = toArgs(chain.getArgs());
+                    ByteBuffer buf = args[0] instanceof ByteBuffer ? (ByteBuffer) args[0] : null;
+                    int posBefore = buf != null ? buf.position() : 0;
                     Object result = chain.proceed(args);
-                    replaceByteBufferResult(chain.getThisObject(),
-                            args[0] instanceof ByteBuffer ? (ByteBuffer) args[0] : null,
-                            intResult(result), "ByteBuffer(int,int)");
-                    return result;
+                    int r = intResult(result);
+                    int newR = replaceByteBufferResult(chain.getThisObject(), buf, posBefore, r, "ByteBuffer(int,int)");
+                    return newR == r ? result : Integer.valueOf(newR);
                 }, "AudioRecord.read(ByteBuffer, int, int)");
     }
 
@@ -735,34 +744,63 @@ public class MicrophoneHandler implements ICameraHandler {
      *       缓冲未就绪或静音模式填 0。</li>
      * </ul>
      */
-    private static void replaceByteBufferResult(Object audioRecord, ByteBuffer buffer,
-            int result, String methodTag) {
+    private static int replaceByteBufferResult(Object audioRecord, ByteBuffer buffer,
+            int posBefore, int result, String methodTag) {
         if (!isMicHookEnabled() || result <= 0 || buffer == null) {
-            return;
+            return result;
         }
         AudioRecordParams p = getParams(audioRecord);
         logReadCall(result, methodTag);
 
         int n = Math.min(result, buffer.capacity());
         if (n <= 0) {
-            return;
+            return result;
         }
-        byte[] tmp = new byte[n]; // 默认全 0 → 静音兜底
+
+        // 流模式：按 1 倍实时「限量交付」。只把 allowed 字节写成真实流音频、其余静音，
+        // 并把 read 的返回值降到 allowed，让快读的目标 App 拿到的真实音频恒为 1x（0=暂无新数据）。
+        if (shouldUseStreamPcm()) {
+            logStreamReadPattern(result);
+            int frameBytes = Math.max(2, p.channelCount * bytesPerSample(p.audioFormat));
+            int bytesPerSec = p.sampleRate * frameBytes;
+            int allowed = (int) STREAM_RATE_PACER.allowed(n, bytesPerSec,
+                    android.os.SystemClock.elapsedRealtime());
+            allowed -= allowed % frameBytes; // 对齐帧边界
+            if (allowed < 0) {
+                allowed = 0;
+            }
+            byte[] tmp = new byte[n]; // 其余保持 0（静音，绝不泄露真麦克风）
+            if (allowed > 0) {
+                try {
+                    fillStreamInto(tmp, 0, allowed, p);
+                } catch (Throwable t) {
+                    LogUtil.log(TAG + " 组装流音频异常，回退静音: " + t);
+                    Arrays.fill(tmp, (byte) 0);
+                }
+            }
+            MicByteBufferWriter.overwriteFromStart(buffer, tmp, n);
+            try {
+                buffer.position(posBefore + allowed); // 位置与上报的有效字节一致
+            } catch (Throwable ignored) {
+            }
+            return allowed;
+        }
+
+        // 非流模式：原有整块替换（视频同步/替换/静音），返回原 result
+        byte[] tmp = new byte[n];
         try {
-            if (shouldUseStreamPcm()) {
-                fillStreamInto(tmp, 0, n, p);
-            } else if (isVideoSyncMode()) {
+            if (isVideoSyncMode()) {
                 long posMs = getVideoPlaybackPositionMs();
                 AudioDataProvider.fillBytesAtPosition(tmp, 0, n, p.sampleRate, p.channelCount, posMs);
             } else if (isReplaceMode()) {
                 AudioDataProvider.fillBytes(tmp, 0, n, p.sampleRate, p.channelCount);
             }
-            // else: mute / stream 缓冲未就绪 → tmp 保持全 0
         } catch (Throwable t) {
             LogUtil.log(TAG + " 组装 ByteBuffer 替换音频异常，回退静音: " + t);
-            Arrays.fill(tmp, (byte) 0); // 出错也绝不透传真实麦克风
+            Arrays.fill(tmp, (byte) 0);
         }
         MicByteBufferWriter.overwriteFromStart(buffer, tmp, n);
+        return result;
     }
 
     private static void replaceFloatArrayResult(Object audioRecord, float[] buffer, int offset, int result,
