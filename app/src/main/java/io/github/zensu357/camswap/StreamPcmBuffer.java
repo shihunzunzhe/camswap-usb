@@ -69,6 +69,28 @@ public final class StreamPcmBuffer {
         return active;
     }
 
+    /**
+     * 校正声明的采样率/声道（不清空数据）。用于缓冲被提前以默认值 start 后，
+     * 首次拿到真实 {@code AudioTrack} 格式时对齐——否则读侧重采样参照错误，导致变调/杂音。
+     * 数据本身恒为 16-bit，改声明值不影响已存字节的含义。
+     */
+    public static void reconcileFormat(int srcSampleRate, int srcChannels) {
+        synchronized (LOCK) {
+            boolean changed = false;
+            if (srcSampleRate > 0 && srcSampleRate != sampleRate) {
+                sampleRate = srcSampleRate;
+                changed = true;
+            }
+            if (srcChannels > 0 && srcChannels != channels) {
+                channels = srcChannels;
+                changed = true;
+            }
+            if (changed) {
+                LogUtil.log(TAG + "reconcile rate=" + sampleRate + " ch=" + channels);
+            }
+        }
+    }
+
     public static int getSampleRate() {
         synchronized (LOCK) {
             return sampleRate;
