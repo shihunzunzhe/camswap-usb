@@ -628,6 +628,37 @@ public class MicrophoneHandler implements ICameraHandler {
         }, "AudioRecord.startRecording()");
     }
 
+    // AudioRecord readMode 常量
+    private static final int READ_BLOCKING = 0;
+    private static final int READ_NON_BLOCKING = 1;
+    private static volatile boolean forcedBlockingLogged = false;
+
+    /**
+     * 根本解：流注入场景下，把目标 App 的<b>非阻塞</b>读取强制改为<b>阻塞</b>读取。
+     * 阻塞读取会由真实麦克风硬件按采样率把读取节奏拉回 <b>1 倍实时</b>——从源头消除
+     * 「快读快放」，之后 1:1 注入即为干净的 1 倍速（无 sleep、不改返回值、无音质损失）。
+     *
+     * @param modeIdx readMode 参数在 args 中的下标
+     */
+    private static void maybeForceBlocking(Object[] args, int modeIdx) {
+        try {
+            if (!isMicHookEnabled() || !VideoManager.isStreamMode()) {
+                return;
+            }
+            if (modeIdx < args.length && args[modeIdx] instanceof Integer) {
+                int mode = (Integer) args[modeIdx];
+                if (mode == READ_NON_BLOCKING) {
+                    args[modeIdx] = READ_BLOCKING;
+                    if (!forcedBlockingLogged) {
+                        forcedBlockingLogged = true;
+                        LogUtil.log(TAG + " 已强制 READ_BLOCKING（目标 App 原用非阻塞读取）modeIdx=" + modeIdx);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     private void hookReadByteArray(ClassLoader classLoader) {
         hookMethod(classLoader, "android.media.AudioRecord", "read",
                 new Class<?>[] { byte[].class, int.class, int.class }, chain -> {
@@ -643,6 +674,7 @@ public class MicrophoneHandler implements ICameraHandler {
         hookMethod(classLoader, "android.media.AudioRecord", "read",
                 new Class<?>[] { byte[].class, int.class, int.class, int.class }, chain -> {
                     Object[] args = toArgs(chain.getArgs());
+                    maybeForceBlocking(args, 3);
                     Object result = chain.proceed(args);
                     replaceByteArrayResult(chain.getThisObject(), (byte[]) args[0], (int) args[1], intResult(result),
                             "byte[](readMode)");
@@ -665,6 +697,7 @@ public class MicrophoneHandler implements ICameraHandler {
         hookMethod(classLoader, "android.media.AudioRecord", "read",
                 new Class<?>[] { short[].class, int.class, int.class, int.class }, chain -> {
                     Object[] args = toArgs(chain.getArgs());
+                    maybeForceBlocking(args, 3);
                     Object result = chain.proceed(args);
                     replaceShortArrayResult(chain.getThisObject(), (short[]) args[0], (int) args[1], intResult(result),
                             "short[](readMode)");
@@ -688,6 +721,7 @@ public class MicrophoneHandler implements ICameraHandler {
         hookMethod(classLoader, "android.media.AudioRecord", "read",
                 new Class<?>[] { float[].class, int.class, int.class, int.class }, chain -> {
                     Object[] args = toArgs(chain.getArgs());
+                    maybeForceBlocking(args, 3);
                     Object result = chain.proceed(args);
                     replaceFloatArrayResult(chain.getThisObject(), (float[]) args[0], (int) args[1], intResult(result),
                             "float[]");
@@ -699,6 +733,7 @@ public class MicrophoneHandler implements ICameraHandler {
         hookMethod(classLoader, "android.media.AudioRecord", "read",
                 new Class<?>[] { ByteBuffer.class, int.class, int.class }, chain -> {
                     Object[] args = toArgs(chain.getArgs());
+                    maybeForceBlocking(args, 2);
                     Object result = chain.proceed(args);
                     replaceByteBufferResult(chain.getThisObject(),
                             args[0] instanceof ByteBuffer ? (ByteBuffer) args[0] : null,
