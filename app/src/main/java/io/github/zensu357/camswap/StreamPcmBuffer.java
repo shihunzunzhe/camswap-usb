@@ -19,8 +19,21 @@ import io.github.zensu357.camswap.utils.LogUtil;
 public final class StreamPcmBuffer {
 
     private static final String TAG = "【CS】【pcm】";
-    /** 约 3 秒 @ 48kHz mono 16-bit；立体声时减半时长，足够覆盖网络抖动 */
+    /** 物理容量：约 3 秒 @ 48kHz mono 16-bit；仅作上限，实际只保留最新一小段 */
     private static final int CAPACITY_BYTES = 48_000 * 2 * 3;
+
+    /**
+     * 低延迟"只读最新"策略：把积压（未被读走的音频）控制在很低的水平。
+     * <ul>
+     *   <li>{@link #TARGET_LATENCY_MS}：重同步后保留的音频时长（正常延迟）；</li>
+     *   <li>{@link #MAX_LATENCY_MS}：积压硬上限，一旦超过就丢弃过旧数据、重同步到目标。</li>
+     * </ul>
+     * 用滞回（hard cap → target）避免每次写都丢导致连续卡顿：正常播放连续无跳，
+     * 只有当积压堆到上限（网络突发/卡顿后补帧）才丢一次历史、跳到最新。
+     * <b>只丢历史、不加速</b>——读侧仍按目标 App 的真实节奏 1:1 消费，音调正常。
+     */
+    private static final int TARGET_LATENCY_MS = 150;
+    private static final int MAX_LATENCY_MS = 350;
 
     private static final Object LOCK = new Object();
     private static final byte[] BUF = new byte[CAPACITY_BYTES];
@@ -31,6 +44,7 @@ public final class StreamPcmBuffer {
     private static volatile boolean active;
     private static long totalWritten;
     private static long totalRead;
+    private static long totalDropped;
     private static long lastLogMs;
 
     private StreamPcmBuffer() {
@@ -43,6 +57,7 @@ public final class StreamPcmBuffer {
             available = 0;
             totalWritten = 0;
             totalRead = 0;
+            totalDropped = 0;
             if (srcSampleRate > 0) {
                 sampleRate = srcSampleRate;
             }
@@ -67,6 +82,13 @@ public final class StreamPcmBuffer {
 
     public static boolean isActive() {
         return active;
+    }
+
+    /** 当前积压字节数（未被读走的音频）。测试/诊断用。 */
+    static int availableBytes() {
+        synchronized (LOCK) {
+            return available;
+        }
     }
 
     /**
@@ -128,8 +150,37 @@ public final class StreamPcmBuffer {
                 available = Math.min(CAPACITY_BYTES, available + chunk);
             }
             totalWritten += len;
+            trimBacklog(); // 只保留最新音频：积压超限则丢历史、重同步到目标延迟
             maybeLog();
         }
+    }
+
+    /**
+     * 积压超过 {@link #MAX_LATENCY_MS} 时，丢弃过旧数据、把读取窗口重同步到
+     * {@link #TARGET_LATENCY_MS}——即把 {@code readPos} 直接跳到 {@code writePos - target}，
+     * 保证下次读到的是最新音频。仅在积压堆高时触发（滞回），平时不动，避免连续跳音。
+     * 调用方需持有 {@link #LOCK}。
+     */
+    private static void trimBacklog() {
+        int hardCap = bytesForMs(MAX_LATENCY_MS);
+        if (available > hardCap) {
+            int target = bytesForMs(TARGET_LATENCY_MS);
+            totalDropped += (available - target);
+            available = target; // readPos = writePos - available，等效丢弃最旧的 (available-target) 字节
+        }
+    }
+
+    /** 按当前采样率/声道，把毫秒时长换算成 16-bit PCM 字节数（偶数、不超容量）。 */
+    private static int bytesForMs(int ms) {
+        long bytesPerSec = (long) sampleRate * channels * 2L; // 16-bit
+        long b = bytesPerSec * ms / 1000L;
+        if (b < 2) {
+            b = 2;
+        }
+        if (b > CAPACITY_BYTES) {
+            b = CAPACITY_BYTES;
+        }
+        return (int) (b & ~1L);
     }
 
     public static void write(java.nio.ByteBuffer buffer, int length) {
@@ -270,8 +321,11 @@ public final class StreamPcmBuffer {
         long now = android.os.SystemClock.elapsedRealtime();
         if (now - lastLogMs > 5000L) {
             lastLogMs = now;
-            LogUtil.log(TAG + "buf available=" + available + "/" + CAPACITY_BYTES
+            long bytesPerSec = Math.max(1L, (long) sampleRate * channels * 2L);
+            long latencyMs = available * 1000L / bytesPerSec; // 当前音频延迟（积压时长）
+            LogUtil.log(TAG + "buf available=" + available + " (~" + latencyMs + "ms)"
                     + " written=" + totalWritten + " read=" + totalRead
+                    + " dropped=" + totalDropped
                     + " rate=" + sampleRate + " ch=" + channels);
         }
     }

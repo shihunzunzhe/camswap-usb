@@ -8,6 +8,8 @@ import static org.junit.Assert.assertTrue;
 import android.os.SystemClock;
 import android.util.Log;
 
+import java.util.Arrays;
+
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -112,22 +114,59 @@ public class StreamPcmBufferTest {
     }
 
     @Test
-    public void ringBuffer_wrapsAroundKeepingLatest() {
+    public void trim_dropsBacklog_keepsOnlyLatest() {
+        // 48000/1 → 96000 B/s；硬上限≈350ms=33600B，目标≈150ms=14400B
         StreamPcmBuffer.start(48000, 1);
-        // 写满并绕回：容量约 288000 字节；连续写 3 段，验证读出的是最新写入
-        int cap = 48000 * 2 * 3;
-        byte[] filler = new byte[cap - 4];
-        StreamPcmBuffer.write(filler, 0, filler.length); // available = cap-4
-        // 再写 6 字节（含最后 2 字节触发绕回覆盖最旧数据）
-        StreamPcmBuffer.write(new byte[] {1, 2, 3, 4, 5, 6}, 0, 6);
+        StreamPcmBuffer.write(new byte[30000], 0, 30000); // 历史 0x00，未超硬上限
+        byte[] latest = new byte[10000];
+        Arrays.fill(latest, (byte) 0x22);
+        StreamPcmBuffer.write(latest, 0, latest.length); // 累计 40000 > 硬上限 → 触发丢弃重同步
 
-        // 一次性读走全部 available（应为 cap，绕回后旧数据被覆盖），末尾 6 字节为最新
-        byte[] out = new byte[cap];
-        int n = StreamPcmBuffer.read(out, 0, cap, 48000, 1);
-        assertEquals(cap, n);
-        byte[] tail = new byte[6];
-        System.arraycopy(out, cap - 6, tail, 0, 6);
-        assertArrayEquals(new byte[] {1, 2, 3, 4, 5, 6}, tail);
+        int avail = StreamPcmBuffer.availableBytes();
+        // 积压被夹到目标附近，远小于写入总量 40000
+        assertTrue("avail 应被裁到低水位, 实际=" + avail, avail <= 20000);
+        assertTrue("应至少保留最新一段", avail >= 8000);
+
+        // 读出全部积压，末尾必然是最新写入的 0x22（历史 0x00 已被丢弃）
+        byte[] out = new byte[avail];
+        StreamPcmBuffer.read(out, 0, avail, 48000, 1);
+        assertEquals((byte) 0x22, out[avail - 1]);
+        assertEquals((byte) 0x22, out[avail - 2]);
+    }
+
+    @Test
+    public void trim_notTriggeredForSmallBacklog() {
+        StreamPcmBuffer.start(48000, 1);
+        // 小于目标延迟的写入不应触发丢弃，数据完整可读
+        byte[] in = new byte[4000];
+        Arrays.fill(in, (byte) 0x5A);
+        StreamPcmBuffer.write(in, 0, in.length);
+        assertEquals(4000, StreamPcmBuffer.availableBytes());
+
+        byte[] out = new byte[4000];
+        StreamPcmBuffer.read(out, 0, 4000, 48000, 1);
+        assertArrayEquals(in, out);
+    }
+
+    @Test
+    public void writePosWrapsAround_withTrim_boundedAndLatestReadable() {
+        StreamPcmBuffer.start(48000, 1);
+        int cap = 48000 * 2 * 3; // 288000
+        // 写入远超物理容量，触发 writePos 绕回；trim 保证积压始终有界
+        byte[] block = new byte[20000];
+        for (int i = 0; i < 20; i++) { // 400000 > cap
+            StreamPcmBuffer.write(block, 0, block.length);
+        }
+        assertTrue("积压应有界，不随写入无限增长", StreamPcmBuffer.availableBytes() <= 40000);
+
+        byte[] latest = new byte[8000];
+        Arrays.fill(latest, (byte) 0x33);
+        StreamPcmBuffer.write(latest, 0, latest.length);
+
+        int avail = StreamPcmBuffer.availableBytes();
+        byte[] out = new byte[avail];
+        StreamPcmBuffer.read(out, 0, avail, 48000, 1);
+        assertEquals((byte) 0x33, out[avail - 1]); // 最新可读
     }
 
     @Test
