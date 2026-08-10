@@ -52,6 +52,9 @@ public final class StreamPcmBuffer {
      * 只剩 1ms → 一抖就欠载 → 断断续续。
      */
     private static boolean priming = true;
+    /** 连续完全读空的次数；累计到阈值才判定为真·停顿并重新攒数（避免单次抖动就插 300ms 静音）。 */
+    private static int underrunReads;
+    private static final int REPRIME_AFTER_UNDERRUNS = 10;
 
     private StreamPcmBuffer() {
     }
@@ -65,6 +68,7 @@ public final class StreamPcmBuffer {
             totalRead = 0;
             totalDropped = 0;
             priming = true; // 开流先攒够目标延迟再放音
+            underrunReads = 0;
             if (srcSampleRate > 0) {
                 sampleRate = srcSampleRate;
             }
@@ -265,12 +269,20 @@ public final class StreamPcmBuffer {
             if (targetChannels <= 0) {
                 targetChannels = channels;
             }
+            int availBefore = available;
             int served = (targetRate == sampleRate && targetChannels == channels)
                     ? readExact(out, offset, want)
                     : readResampled(out, offset, want, targetRate, targetChannels);
-            // 读空 → 重新攒数，避免持续在 0 附近抖动、逐帧欠载
-            if (available <= 0) {
-                priming = true;
+            // 只有连续多次「完全读空」（真·停顿，如断流重连）才重新攒数；
+            // 单次抖动只由 readExact 用静音掩盖，绝不因一次触底就插 300ms 静音（否则周期性断音）。
+            if (availBefore <= 0) {
+                if (++underrunReads >= REPRIME_AFTER_UNDERRUNS) {
+                    priming = true;
+                    underrunReads = 0;
+                    LogUtil.log(TAG + "sustained underrun → re-prime");
+                }
+            } else {
+                underrunReads = 0;
             }
             return served;
         }

@@ -142,6 +142,43 @@ public class StreamPcmBufferTest {
     }
 
     @Test
+    public void fewUnderruns_doNotRePrime_keepPlaying() {
+        StreamPcmBuffer.start(48000, 1);
+        StreamPcmBuffer.beginPlaybackForTest(); // 放音态，available=0
+        byte[] out = new byte[1000];
+        for (int i = 0; i < 5; i++) { // 5 次读空（< 阈值10）不应重攒
+            StreamPcmBuffer.read(out, 0, 1000, 48000, 1);
+        }
+        // 写真音频应立即读到（仍在放音态，没被重攒成静音）
+        byte[] more = new byte[2000];
+        Arrays.fill(more, (byte) 0x55);
+        StreamPcmBuffer.write(more, 0, 2000);
+        byte[] out2 = new byte[2000];
+        StreamPcmBuffer.read(out2, 0, 2000, 48000, 1);
+        assertEquals((byte) 0x55, out2[0]);
+        assertEquals((byte) 0x55, out2[1999]);
+    }
+
+    @Test
+    public void sustainedUnderrun_rePrimes() {
+        StreamPcmBuffer.start(48000, 1);
+        StreamPcmBuffer.beginPlaybackForTest();
+        byte[] out = new byte[1000];
+        for (int i = 0; i < 12; i++) { // 超阈值 → 触发重攒
+            StreamPcmBuffer.read(out, 0, 1000, 48000, 1);
+        }
+        // 重攒后写入不足 target 应给静音、不消费
+        byte[] some = new byte[2000];
+        Arrays.fill(some, (byte) 0x55);
+        StreamPcmBuffer.write(some, 0, 2000);
+        byte[] out2 = new byte[1000];
+        Arrays.fill(out2, (byte) 0x11);
+        StreamPcmBuffer.read(out2, 0, 1000, 48000, 1);
+        assertArrayEquals("重攒后未攒够应给静音", new byte[1000], out2);
+        assertEquals("重攒期不消费缓冲", 2000, StreamPcmBuffer.availableBytes());
+    }
+
+    @Test
     public void trim_dropsBacklog_keepsOnlyLatest() {
         // 48000/1 → 96000 B/s。写入远超硬上限，验证只保留最新一小段
         StreamPcmBuffer.start(48000, 1);
