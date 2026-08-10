@@ -50,6 +50,9 @@ public class MicrophoneHandler implements ICameraHandler {
     // 异步加载标记：使用 AtomicBoolean 防止竞态条件导致重复提交加载任务
     private static final AtomicBoolean asyncLoadingInProgress = new AtomicBoolean(false);
 
+    // 只打印一次流注入格式（目标 AudioRecord 与流缓冲的 rate/ch/编码），便于核实是否格式对齐
+    private static final AtomicBoolean streamFormatLogged = new AtomicBoolean(false);
+
     /**
      * 存储每个 AudioRecord 实例的构造参数
      * 使用 ConcurrentHashMap 防止 GC 过早回收导致参数丢失，
@@ -183,6 +186,62 @@ public class MicrophoneHandler implements ICameraHandler {
     private static boolean shouldUseStreamPcm() {
         return MicAudioRouter.usesStreamPcm(isMicHookEnabled(), getMicHookMode(),
                 VideoManager.isStreamMode(), StreamPcmBuffer.isActive());
+    }
+
+    /**
+     * 从流缓冲取推流音频，<b>按目标 AudioRecord 的实际编码</b>（16-bit / float / 8-bit）
+     * 写入 {@code dst[offset, offset+n)}。
+     * <p>关键：缓冲内部统一 16-bit，若目标录音是 float/8-bit 而我们直接写 16-bit，
+     * 会被目标 App 按错误位深解释成纯杂音——这里按 {@code p.audioFormat} 做位深转换。
+     */
+    private static void fillStreamInto(byte[] dst, int offset, int n, AudioRecordParams p) {
+        logStreamFormatOnce(p);
+        int enc = p.audioFormat;
+        int bytesPerSample = enc == AudioFormat.ENCODING_PCM_FLOAT ? 4
+                : enc == AudioFormat.ENCODING_PCM_8BIT ? 1 : 2;
+        int samples = n / bytesPerSample;
+        if (samples <= 0) {
+            Arrays.fill(dst, offset, offset + n, (byte) 0);
+            return;
+        }
+        // 先按目标采样率/声道取 16-bit，再转成目标位深
+        byte[] pcm16 = new byte[samples * 2];
+        StreamPcmBuffer.read(pcm16, 0, pcm16.length, p.sampleRate, p.channelCount);
+        byte[] outBytes;
+        if (enc == AudioFormat.ENCODING_PCM_FLOAT) {
+            outBytes = PcmConvert.pcm16ToFloatLe(pcm16, 0, pcm16.length);
+        } else if (enc == AudioFormat.ENCODING_PCM_8BIT) {
+            outBytes = PcmConvert.pcm16ToPcm8u(pcm16, 0, pcm16.length);
+        } else {
+            outBytes = pcm16;
+        }
+        int copy = Math.min(n, outBytes.length);
+        System.arraycopy(outBytes, 0, dst, offset, copy);
+        if (copy < n) {
+            Arrays.fill(dst, offset + copy, offset + n, (byte) 0);
+        }
+    }
+
+    private static void logStreamFormatOnce(AudioRecordParams p) {
+        if (streamFormatLogged.compareAndSet(false, true)) {
+            LogUtil.log(TAG + " 流注入格式对齐: 目标AudioRecord rate=" + p.sampleRate
+                    + " ch=" + p.channelCount + " encoding=" + encName(p.audioFormat)
+                    + " ；流缓冲 rate=" + StreamPcmBuffer.getSampleRate()
+                    + " ch=" + StreamPcmBuffer.getChannels());
+        }
+    }
+
+    private static String encName(int enc) {
+        if (enc == AudioFormat.ENCODING_PCM_FLOAT) {
+            return "PCM_FLOAT";
+        }
+        if (enc == AudioFormat.ENCODING_PCM_8BIT) {
+            return "PCM_8BIT";
+        }
+        if (enc == AudioFormat.ENCODING_PCM_16BIT) {
+            return "PCM_16BIT";
+        }
+        return "enc(" + enc + ")";
     }
 
     /**
@@ -363,7 +422,7 @@ public class MicrophoneHandler implements ICameraHandler {
 
         try {
             if (shouldUseStreamPcm()) {
-                StreamPcmBuffer.read(buffer, offset, result, p.sampleRate, p.channelCount);
+                fillStreamInto(buffer, offset, result, p);
             } else if (isVideoSyncMode()) {
                 long posMs = getVideoPlaybackPositionMs();
                 AudioDataProvider.fillBytesAtPosition(buffer, offset, result,
@@ -646,7 +705,7 @@ public class MicrophoneHandler implements ICameraHandler {
         byte[] tmp = new byte[n]; // 默认全 0 → 静音兜底
         try {
             if (shouldUseStreamPcm()) {
-                StreamPcmBuffer.read(tmp, 0, n, p.sampleRate, p.channelCount);
+                fillStreamInto(tmp, 0, n, p);
             } else if (isVideoSyncMode()) {
                 long posMs = getVideoPlaybackPositionMs();
                 AudioDataProvider.fillBytesAtPosition(tmp, 0, n, p.sampleRate, p.channelCount, posMs);

@@ -61,6 +61,50 @@ final class PcmConvert {
         return out;
     }
 
+    /** 16-bit 小端 PCM → 32-bit float 小端字节（范围 [-1,1)）。用于向 float 编码的录音注入。 */
+    static byte[] pcm16ToFloatLe(byte[] pcm16, int off, int len) {
+        if (pcm16 == null || len < 2) {
+            return new byte[0];
+        }
+        int usable = Math.min(len, pcm16.length - off) & ~1;
+        int samples = usable / 2;
+        byte[] out = new byte[samples * 4];
+        for (int i = 0; i < samples; i++) {
+            int lo = pcm16[off + i * 2] & 0xFF;
+            int hi = pcm16[off + i * 2 + 1] << 8;
+            short s = (short) (hi | lo);
+            int bits = Float.floatToIntBits(s / 32768f);
+            out[i * 4] = (byte) (bits & 0xFF);
+            out[i * 4 + 1] = (byte) ((bits >> 8) & 0xFF);
+            out[i * 4 + 2] = (byte) ((bits >> 16) & 0xFF);
+            out[i * 4 + 3] = (byte) ((bits >> 24) & 0xFF);
+        }
+        return out;
+    }
+
+    /** 16-bit 小端 PCM → 8-bit 无符号 PCM（中点 128）。用于向 8-bit 编码的录音注入。 */
+    static byte[] pcm16ToPcm8u(byte[] pcm16, int off, int len) {
+        if (pcm16 == null || len < 2) {
+            return new byte[0];
+        }
+        int usable = Math.min(len, pcm16.length - off) & ~1;
+        int samples = usable / 2;
+        byte[] out = new byte[samples];
+        for (int i = 0; i < samples; i++) {
+            int lo = pcm16[off + i * 2] & 0xFF;
+            int hi = pcm16[off + i * 2 + 1] << 8;
+            short s = (short) (hi | lo);
+            int u = (s >> 8) + 128; // 高字节居中到 0..255
+            if (u < 0) {
+                u = 0;
+            } else if (u > 255) {
+                u = 255;
+            }
+            out[i] = (byte) u;
+        }
+        return out;
+    }
+
     private static void writeSample(byte[] out, int idx, float f) {
         int s = Math.round(f * 32767f);
         if (s > 32767) {

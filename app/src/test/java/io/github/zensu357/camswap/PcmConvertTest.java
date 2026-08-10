@@ -72,6 +72,41 @@ public class PcmConvertTest {
         assertEquals((-128) << 8, sampleAt(out, 2)); // 0 → -128<<8
     }
 
+    private static byte[] pcm16(short... ss) {
+        byte[] o = new byte[ss.length * 2];
+        for (int i = 0; i < ss.length; i++) {
+            o[i * 2] = (byte) (ss[i] & 0xFF);
+            o[i * 2 + 1] = (byte) ((ss[i] >> 8) & 0xFF);
+        }
+        return o;
+    }
+
+    private static float floatAt(byte[] b, int i) {
+        int bits = (b[i * 4] & 0xFF) | ((b[i * 4 + 1] & 0xFF) << 8)
+                | ((b[i * 4 + 2] & 0xFF) << 16) | ((b[i * 4 + 3] & 0xFF) << 24);
+        return Float.intBitsToFloat(bits);
+    }
+
+    @Test
+    public void pcm16ToFloatLe_mapsToMinusOneToOne() {
+        byte[] out = PcmConvert.pcm16ToFloatLe(pcm16((short) 0, (short) 32767, (short) -32768, (short) 16384), 0, 8);
+        assertEquals(4 * 4, out.length);
+        assertEquals(0f, floatAt(out, 0), 1e-6);
+        assertEquals(32767 / 32768f, floatAt(out, 1), 1e-6);
+        assertEquals(-1f, floatAt(out, 2), 1e-6);
+        assertEquals(0.5f, floatAt(out, 3), 1e-6);
+    }
+
+    @Test
+    public void pcm16ToPcm8u_centersAt128() {
+        byte[] out = PcmConvert.pcm16ToPcm8u(pcm16((short) 0, (short) 32767, (short) -32768, (short) 256), 0, 8);
+        assertEquals(4, out.length);
+        assertEquals(128, out[0] & 0xFF); // 0 → 中点
+        assertEquals(255, out[1] & 0xFF); // +满幅
+        assertEquals(0, out[2] & 0xFF); // -满幅
+        assertEquals(129, out[3] & 0xFF); // 256>>8=1 → 129
+    }
+
     @Test
     public void guards_emptyAndNull() {
         assertEquals(0, PcmConvert.floatLeToPcm16(null, 0, 4).length);
