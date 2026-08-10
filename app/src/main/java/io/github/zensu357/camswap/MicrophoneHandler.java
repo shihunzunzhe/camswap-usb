@@ -225,16 +225,45 @@ public class MicrophoneHandler implements ICameraHandler {
 
     private static volatile int streamReadLogCount = 0;
     private static volatile long lastStreamReadMs = 0;
+    // 5 秒窗口聚合：无论何时抓 -d 都能看到近期读取模式（不怕早期逐条日志滚出缓冲）
+    private static volatile long winStartMs = 0;
+    private static volatile int winReads = 0;
+    private static volatile long winBytes = 0;
+    private static volatile long winMaxGapMs = 0;
 
-    /** 诊断：打印目标 App 前若干次读取的字节数与距上次的间隔，用于判断是「突发大块」还是「连续快读」。 */
+    /**
+     * 诊断目标 App 的麦克风读取模式（判断「突发大块」还是「连续快读」）。
+     * 全部用 ASCII 关键词（findstr 可匹配）：逐条 {@code streamRead}，周期 {@code streamReadSummary}。
+     * 关键看汇总的 {@code rate=}：≈192000B/s 即 1 倍实时；远大于则目标 App 拉取快于实时。
+     */
     private static void logStreamReadPattern(int bytes) {
+        long now = android.os.SystemClock.elapsedRealtime();
+        long gap = lastStreamReadMs == 0 ? 0 : now - lastStreamReadMs;
+        lastStreamReadMs = now;
+
         if (streamReadLogCount < 40) {
             streamReadLogCount++;
-            long now = android.os.SystemClock.elapsedRealtime();
-            long delta = lastStreamReadMs == 0 ? 0 : now - lastStreamReadMs;
-            lastStreamReadMs = now;
-            LogUtil.log(TAG + " 流读取 #" + streamReadLogCount + " bytes=" + bytes
-                    + " 距上次=" + delta + "ms");
+            LogUtil.log(TAG + " streamRead #" + streamReadLogCount
+                    + " bytes=" + bytes + " gap=" + gap + "ms");
+        }
+
+        if (winStartMs == 0) {
+            winStartMs = now;
+        }
+        winReads++;
+        winBytes += bytes;
+        if (gap > winMaxGapMs) {
+            winMaxGapMs = gap;
+        }
+        long winMs = now - winStartMs;
+        if (winMs >= 5000) {
+            LogUtil.log(TAG + " streamReadSummary win=" + winMs + "ms reads=" + winReads
+                    + " bytes=" + winBytes + " maxgap=" + winMaxGapMs + "ms"
+                    + " rate=" + (winBytes * 1000 / Math.max(1, winMs)) + "B/s");
+            winStartMs = now;
+            winReads = 0;
+            winBytes = 0;
+            winMaxGapMs = 0;
         }
     }
 
