@@ -53,9 +53,6 @@ public class MicrophoneHandler implements ICameraHandler {
     // 只打印一次流注入格式（目标 AudioRecord 与流缓冲的 rate/ch/编码），便于核实是否格式对齐
     private static final AtomicBoolean streamFormatLogged = new AtomicBoolean(false);
 
-    // 输出节拍器：把注入音频限速到 1 倍实时，避免目标 App 拉取过快造成「快放」
-    private static final StreamAudioPacer STREAM_PACER = new StreamAudioPacer();
-
     /**
      * 存储每个 AudioRecord 实例的构造参数
      * 使用 ConcurrentHashMap 防止 GC 过早回收导致参数丢失，
@@ -199,6 +196,7 @@ public class MicrophoneHandler implements ICameraHandler {
      */
     private static void fillStreamInto(byte[] dst, int offset, int n, AudioRecordParams p) {
         logStreamFormatOnce(p);
+        logStreamReadPattern(n); // 诊断：目标 App 读取大小与间隔（判断突发/连续）
         int enc = p.audioFormat;
         int bytesPerSample = enc == AudioFormat.ENCODING_PCM_FLOAT ? 4
                 : enc == AudioFormat.ENCODING_PCM_8BIT ? 1 : 2;
@@ -223,35 +221,25 @@ public class MicrophoneHandler implements ICameraHandler {
         if (copy < n) {
             Arrays.fill(dst, offset + copy, offset + n, (byte) 0);
         }
-        // 关键：把注入输出限速到严格 1 倍实时。目标 App 若拉取快于实时，这里 sleep 补齐，
-        // 避免把预攒音频瞬间抽干造成「每 2 秒快放一次」。
-        paceToRealtime(n, p);
     }
 
-    /** 按 wall-clock 将本次注入限速到 1 倍实时（拉取过快则 sleep）。 */
-    private static void paceToRealtime(int bytes, AudioRecordParams p) {
-        try {
-            int enc = p.audioFormat;
-            int bytesPerSample = enc == AudioFormat.ENCODING_PCM_FLOAT ? 4
-                    : enc == AudioFormat.ENCODING_PCM_8BIT ? 1 : 2;
-            int bytesPerSec = p.sampleRate * p.channelCount * bytesPerSample;
-            long sleepMs = STREAM_PACER.onServed(bytes, bytesPerSec,
-                    android.os.SystemClock.elapsedRealtime());
-            if (sleepMs > 0) {
-                if (sleepMs > 300) {
-                    sleepMs = 300; // 单次最多 sleep 300ms，防御异常
-                }
-                Thread.sleep(sleepMs);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (Throwable ignored) {
+    private static volatile int streamReadLogCount = 0;
+    private static volatile long lastStreamReadMs = 0;
+
+    /** 诊断：打印目标 App 前若干次读取的字节数与距上次的间隔，用于判断是「突发大块」还是「连续快读」。 */
+    private static void logStreamReadPattern(int bytes) {
+        if (streamReadLogCount < 40) {
+            streamReadLogCount++;
+            long now = android.os.SystemClock.elapsedRealtime();
+            long delta = lastStreamReadMs == 0 ? 0 : now - lastStreamReadMs;
+            lastStreamReadMs = now;
+            LogUtil.log(TAG + " 流读取 #" + streamReadLogCount + " bytes=" + bytes
+                    + " 距上次=" + delta + "ms");
         }
     }
 
     private static void logStreamFormatOnce(AudioRecordParams p) {
         if (streamFormatLogged.compareAndSet(false, true)) {
-            STREAM_PACER.reset(); // 新一轮注入，重锚节拍器墙钟
             LogUtil.log(TAG + " 流注入格式对齐: 目标AudioRecord rate=" + p.sampleRate
                     + " ch=" + p.channelCount + " encoding=" + encName(p.audioFormat)
                     + " ；流缓冲 rate=" + StreamPcmBuffer.getSampleRate()
