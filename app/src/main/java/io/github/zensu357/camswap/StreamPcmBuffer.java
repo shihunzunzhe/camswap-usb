@@ -46,6 +46,12 @@ public final class StreamPcmBuffer {
     private static long totalRead;
     private static long totalDropped;
     private static long lastLogMs;
+    /**
+     * 抖动缓冲状态：true=攒数期（缓冲不足，读侧先给静音、不消费，直到攒够
+     * {@link #TARGET_LATENCY_MS}）；false=放音期。读空后重新进入攒数，避免缓冲被读到
+     * 只剩 1ms → 一抖就欠载 → 断断续续。
+     */
+    private static boolean priming = true;
 
     private StreamPcmBuffer() {
     }
@@ -58,6 +64,7 @@ public final class StreamPcmBuffer {
             totalWritten = 0;
             totalRead = 0;
             totalDropped = 0;
+            priming = true; // 开流先攒够目标延迟再放音
             if (srcSampleRate > 0) {
                 sampleRate = srcSampleRate;
             }
@@ -88,6 +95,13 @@ public final class StreamPcmBuffer {
     static int availableBytes() {
         synchronized (LOCK) {
             return available;
+        }
+    }
+
+    /** 测试用：跳过抖动缓冲攒数，直接进入放音状态。 */
+    static void beginPlaybackForTest() {
+        synchronized (LOCK) {
+            priming = false;
         }
     }
 
@@ -233,6 +247,17 @@ public final class StreamPcmBuffer {
                 Arrays.fill(out, offset, offset + want, (byte) 0);
                 return want;
             }
+            // 抖动缓冲：攒够目标延迟再放音，避免缓冲被读空导致断续。
+            // 攒数期间给静音、不消费缓冲，让写入侧把积压堆到目标水位。
+            if (priming) {
+                if (available < bytesForMs(TARGET_LATENCY_MS)) {
+                    Arrays.fill(out, offset, offset + want, (byte) 0);
+                    return want;
+                }
+                priming = false;
+                LogUtil.log(TAG + "prime done, available=" + available
+                        + " (~" + latencyMs(available) + "ms)");
+            }
             // 采样率/声道简单处理：若不一致做最近邻（够直播用，避免复杂 resampler）
             if (targetRate <= 0) {
                 targetRate = sampleRate;
@@ -240,11 +265,20 @@ public final class StreamPcmBuffer {
             if (targetChannels <= 0) {
                 targetChannels = channels;
             }
-            if (targetRate == sampleRate && targetChannels == channels) {
-                return readExact(out, offset, want);
+            int served = (targetRate == sampleRate && targetChannels == channels)
+                    ? readExact(out, offset, want)
+                    : readResampled(out, offset, want, targetRate, targetChannels);
+            // 读空 → 重新攒数，避免持续在 0 附近抖动、逐帧欠载
+            if (available <= 0) {
+                priming = true;
             }
-            return readResampled(out, offset, want, targetRate, targetChannels);
+            return served;
         }
+    }
+
+    private static long latencyMs(int bytes) {
+        long bytesPerSec = Math.max(1L, (long) sampleRate * channels * 2L);
+        return bytes * 1000L / bytesPerSec;
     }
 
     public static int readShorts(short[] out, int offset, int count,

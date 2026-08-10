@@ -45,6 +45,7 @@ public class StreamPcmBufferTest {
     @Test
     public void writeThenRead_roundTripsBytes() {
         StreamPcmBuffer.start(48000, 1);
+        StreamPcmBuffer.beginPlaybackForTest(); // 跳过抖动缓冲攒数，直接测读写
         assertTrue(StreamPcmBuffer.isActive());
 
         byte[] in = {1, 2, 3, 4, 5, 6, 7, 8};
@@ -81,6 +82,7 @@ public class StreamPcmBufferTest {
     @Test
     public void read_withPartialData_fillsRemainderWithSilence() {
         StreamPcmBuffer.start(48000, 1);
+        StreamPcmBuffer.beginPlaybackForTest();
         byte[] in = {10, 20, 30, 40};
         StreamPcmBuffer.write(in, 0, in.length);
 
@@ -94,6 +96,7 @@ public class StreamPcmBufferTest {
     @Test
     public void write_oddLengthTruncatedToEven() {
         StreamPcmBuffer.start(48000, 1);
+        StreamPcmBuffer.beginPlaybackForTest();
         // 5 字节 → 只接受偶数长度（16-bit），实际写入 4 字节
         StreamPcmBuffer.write(new byte[] {1, 2, 3, 4, 5}, 0, 5);
         byte[] out = new byte[4];
@@ -104,6 +107,7 @@ public class StreamPcmBufferTest {
     @Test
     public void writeShorts_readShorts_roundTrip() {
         StreamPcmBuffer.start(48000, 1);
+        StreamPcmBuffer.beginPlaybackForTest();
         short[] in = {100, -200, 300, -400};
         StreamPcmBuffer.writeShorts(in, 0, in.length);
 
@@ -111,6 +115,30 @@ public class StreamPcmBufferTest {
         int samples = StreamPcmBuffer.readShorts(out, 0, out.length, 48000, 1);
         assertEquals(4, samples);
         assertArrayEquals(in, out);
+    }
+
+    @Test
+    public void priming_silenceUntilTargetThenServes() {
+        // 48000/1 → 目标 300ms = 28800 字节
+        StreamPcmBuffer.start(48000, 1);
+        byte[] chunk = new byte[10000];
+        Arrays.fill(chunk, (byte) 0x44);
+        StreamPcmBuffer.write(chunk, 0, chunk.length); // 10000 < 28800，仍在攒数
+
+        byte[] out = new byte[2000];
+        Arrays.fill(out, (byte) 0x11);
+        StreamPcmBuffer.read(out, 0, out.length, 48000, 1);
+        assertArrayEquals("攒数期应输出静音", new byte[2000], out);
+        assertEquals("攒数期不消费缓冲", 10000, StreamPcmBuffer.availableBytes());
+
+        // 攒够目标后开始放真音频
+        byte[] more = new byte[20000];
+        Arrays.fill(more, (byte) 0x44);
+        StreamPcmBuffer.write(more, 0, more.length); // 30000 >= 28800
+        byte[] out2 = new byte[2000];
+        StreamPcmBuffer.read(out2, 0, out2.length, 48000, 1);
+        assertEquals((byte) 0x44, out2[0]);
+        assertEquals((byte) 0x44, out2[1999]);
     }
 
     @Test
@@ -137,6 +165,7 @@ public class StreamPcmBufferTest {
     @Test
     public void trim_notTriggeredForSmallBacklog() {
         StreamPcmBuffer.start(48000, 1);
+        StreamPcmBuffer.beginPlaybackForTest();
         // 小于目标延迟的写入不应触发丢弃，数据完整可读
         byte[] in = new byte[4000];
         Arrays.fill(in, (byte) 0x5A);
