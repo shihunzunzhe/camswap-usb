@@ -32,8 +32,8 @@ public final class StreamPcmBuffer {
      * 只有当积压堆到上限（网络突发/卡顿后补帧）才丢一次历史、跳到最新。
      * <b>只丢历史、不加速</b>——读侧仍按目标 App 的真实节奏 1:1 消费，音调正常。
      */
-    private static final int TARGET_LATENCY_MS = 150;
-    private static final int MAX_LATENCY_MS = 350;
+    private static final int TARGET_LATENCY_MS = 300;
+    private static final int MAX_LATENCY_MS = 800;
 
     private static final Object LOCK = new Object();
     private static final byte[] BUF = new byte[CAPACITY_BYTES];

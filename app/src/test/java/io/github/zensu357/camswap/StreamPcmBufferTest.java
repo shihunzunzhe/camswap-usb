@@ -115,23 +115,23 @@ public class StreamPcmBufferTest {
 
     @Test
     public void trim_dropsBacklog_keepsOnlyLatest() {
-        // 48000/1 → 96000 B/s；硬上限≈350ms=33600B，目标≈150ms=14400B
+        // 48000/1 → 96000 B/s。写入远超硬上限，验证只保留最新一小段
         StreamPcmBuffer.start(48000, 1);
-        StreamPcmBuffer.write(new byte[30000], 0, 30000); // 历史 0x00，未超硬上限
-        byte[] latest = new byte[10000];
+        StreamPcmBuffer.write(new byte[60000], 0, 60000); // 历史 0x00
+        byte[] latest = new byte[60000];
         Arrays.fill(latest, (byte) 0x22);
-        StreamPcmBuffer.write(latest, 0, latest.length); // 累计 40000 > 硬上限 → 触发丢弃重同步
+        StreamPcmBuffer.write(latest, 0, latest.length); // 累计 120000 → 远超硬上限 → 丢弃重同步
 
         int avail = StreamPcmBuffer.availableBytes();
-        // 积压被夹到目标附近，远小于写入总量 40000
-        assertTrue("avail 应被裁到低水位, 实际=" + avail, avail <= 20000);
+        // 积压被夹到低水位，远小于写入总量 120000
+        assertTrue("avail 应被裁到低水位, 实际=" + avail, avail <= 60000);
         assertTrue("应至少保留最新一段", avail >= 8000);
 
-        // 读出全部积压，末尾必然是最新写入的 0x22（历史 0x00 已被丢弃）
+        // 读出全部积压，全是最新写入的 0x22（历史 0x00 已被丢弃）
         byte[] out = new byte[avail];
         StreamPcmBuffer.read(out, 0, avail, 48000, 1);
         assertEquals((byte) 0x22, out[avail - 1]);
-        assertEquals((byte) 0x22, out[avail - 2]);
+        assertEquals((byte) 0x22, out[0]);
     }
 
     @Test
@@ -157,7 +157,7 @@ public class StreamPcmBufferTest {
         for (int i = 0; i < 20; i++) { // 400000 > cap
             StreamPcmBuffer.write(block, 0, block.length);
         }
-        assertTrue("积压应有界，不随写入无限增长", StreamPcmBuffer.availableBytes() <= 40000);
+        assertTrue("积压应有界，不随写入无限增长", StreamPcmBuffer.availableBytes() <= 120000);
 
         byte[] latest = new byte[8000];
         Arrays.fill(latest, (byte) 0x33);
