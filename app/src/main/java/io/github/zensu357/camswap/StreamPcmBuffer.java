@@ -35,8 +35,8 @@ public final class StreamPcmBuffer {
      * <p><b>首要目标：绝不卡顿</b>。因此固定约 2 秒延迟——开流先攒够 2 秒再放音，
      * 2 秒缓冲垫足以吸收几乎所有网络/解码/时钟抖动；只有积压超过上限才丢历史回到 2 秒。
      */
-    private static final int TARGET_LATENCY_MS = 2000;
-    private static final int MAX_LATENCY_MS = 2800;
+    private static final int TARGET_LATENCY_MS = 300;
+    private static final int MAX_LATENCY_MS = 1200;
 
     private static final Object LOCK = new Object();
     private static final byte[] BUF = new byte[CAPACITY_BYTES];
@@ -55,9 +55,10 @@ public final class StreamPcmBuffer {
      * 只剩 1ms → 一抖就欠载 → 断断续续。
      */
     private static boolean priming = true;
-    /** 连续完全读空的次数；累计到阈值才判定为真·停顿并重新攒数（避免单次抖动就插 300ms 静音）。 */
-    private static int underrunReads;
-    private static final int REPRIME_AFTER_UNDERRUNS = 10;
+
+    /** hold-fill：保存最近输出的音频尾部，欠载时用它重复填充（消除「无声空档」），比静音连续。 */
+    private static final byte[] HOLD_TAIL = new byte[8192];
+    private static int holdTailLen;
 
     private StreamPcmBuffer() {
     }
@@ -71,7 +72,7 @@ public final class StreamPcmBuffer {
             totalRead = 0;
             totalDropped = 0;
             priming = true; // 开流先攒够目标延迟再放音
-            underrunReads = 0;
+            holdTailLen = 0;
             if (srcSampleRate > 0) {
                 sampleRate = srcSampleRate;
             }
@@ -289,22 +290,12 @@ public final class StreamPcmBuffer {
             if (targetChannels <= 0) {
                 targetChannels = channels;
             }
-            int availBefore = available;
-            int served = (targetRate == sampleRate && targetChannels == channels)
+            // 欠载由 readExact 的 hold-fill（重复最近音频）保持连续，不再重新攒数——
+            // 目标 App 快读会持续欠载，若一欠载就重攒会造成周期性静音；hold-fill 让内容按
+            // 生产侧 1 倍速前进、无声空档消失。真正断流由 stop()（active=false）回落静音。
+            return (targetRate == sampleRate && targetChannels == channels)
                     ? readExact(out, offset, want)
                     : readResampled(out, offset, want, targetRate, targetChannels);
-            // 只有连续多次「完全读空」（真·停顿，如断流重连）才重新攒数；
-            // 单次抖动只由 readExact 用静音掩盖，绝不因一次触底就插 300ms 静音（否则周期性断音）。
-            if (availBefore <= 0) {
-                if (++underrunReads >= REPRIME_AFTER_UNDERRUNS) {
-                    priming = true;
-                    underrunReads = 0;
-                    LogUtil.log(TAG + "sustained underrun → re-prime");
-                }
-            } else {
-                underrunReads = 0;
-            }
-            return served;
         }
     }
 
@@ -345,9 +336,51 @@ public final class StreamPcmBuffer {
         available -= toCopy;
         totalRead += toCopy;
         if (toCopy < want) {
-            Arrays.fill(out, offset + toCopy, offset + want, (byte) 0);
+            // 欠载：不填静音，改用「重复最近音频」保持连续，消除快读造成的无声空档
+            holdFill(out, offset, toCopy, want);
         }
+        updateHoldTail(out, offset, want);
         return want;
+    }
+
+    /** 用「本次已拷贝的真实音频」或「历史尾部」循环重复，填满 out[offset+filled, offset+want)。 */
+    private static void holdFill(byte[] out, int offset, int filled, int want) {
+        int shortfall = want - filled;
+        if (shortfall <= 0) {
+            return;
+        }
+        byte[] src;
+        int srcOff;
+        int srcLen;
+        if (filled >= 2) {
+            src = out;
+            srcOff = offset;
+            srcLen = filled & ~1;
+        } else if (holdTailLen >= 2) {
+            src = HOLD_TAIL;
+            srcOff = 0;
+            srcLen = holdTailLen & ~1;
+        } else {
+            Arrays.fill(out, offset + filled, offset + want, (byte) 0); // 无历史可重复 → 静音
+            return;
+        }
+        int dst = offset + filled;
+        int end = offset + want;
+        int i = 0;
+        while (dst < end) {
+            out[dst] = src[srcOff + (i % srcLen)];
+            dst++;
+            i++;
+        }
+    }
+
+    private static void updateHoldTail(byte[] out, int offset, int want) {
+        int len = Math.min(want, HOLD_TAIL.length) & ~1;
+        if (len <= 0) {
+            return;
+        }
+        System.arraycopy(out, offset + want - len, HOLD_TAIL, 0, len);
+        holdTailLen = len;
     }
 
     private static int readResampled(byte[] out, int offset, int want,
