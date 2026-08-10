@@ -19,8 +19,8 @@ import io.github.zensu357.camswap.utils.LogUtil;
 public final class StreamPcmBuffer {
 
     private static final String TAG = "【CS】【pcm】";
-    /** 物理容量：约 3 秒 @ 48kHz mono 16-bit；仅作上限，实际只保留最新一小段 */
-    private static final int CAPACITY_BYTES = 48_000 * 2 * 3;
+    /** 物理容量：4 秒 @ 48kHz 立体声 16-bit（=8 秒 @ 单声道）。需大于最大延迟以容纳 2 秒预攒。 */
+    private static final int CAPACITY_BYTES = 48_000 * 2 * 2 * 4;
 
     /**
      * 低延迟"只读最新"策略：把积压（未被读走的音频）控制在很低的水平。
@@ -31,9 +31,12 @@ public final class StreamPcmBuffer {
      * 用滞回（hard cap → target）避免每次写都丢导致连续卡顿：正常播放连续无跳，
      * 只有当积压堆到上限（网络突发/卡顿后补帧）才丢一次历史、跳到最新。
      * <b>只丢历史、不加速</b>——读侧仍按目标 App 的真实节奏 1:1 消费，音调正常。
+     *
+     * <p><b>首要目标：绝不卡顿</b>。因此固定约 2 秒延迟——开流先攒够 2 秒再放音，
+     * 2 秒缓冲垫足以吸收几乎所有网络/解码/时钟抖动；只有积压超过上限才丢历史回到 2 秒。
      */
-    private static final int TARGET_LATENCY_MS = 300;
-    private static final int MAX_LATENCY_MS = 800;
+    private static final int TARGET_LATENCY_MS = 2000;
+    private static final int MAX_LATENCY_MS = 2800;
 
     private static final Object LOCK = new Object();
     private static final byte[] BUF = new byte[CAPACITY_BYTES];
@@ -107,6 +110,23 @@ public final class StreamPcmBuffer {
         synchronized (LOCK) {
             priming = false;
         }
+    }
+
+    /** 测试用：当前配置下的目标/上限延迟字节数与物理容量。 */
+    static int targetLatencyBytesForTest() {
+        synchronized (LOCK) {
+            return bytesForMs(TARGET_LATENCY_MS);
+        }
+    }
+
+    static int maxLatencyBytesForTest() {
+        synchronized (LOCK) {
+            return bytesForMs(MAX_LATENCY_MS);
+        }
+    }
+
+    static int capacityBytesForTest() {
+        return CAPACITY_BYTES;
     }
 
     /**
