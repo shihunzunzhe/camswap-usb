@@ -265,6 +265,17 @@ public class HookMain {
                             LogUtil.log("【CS】Native audio hooks init failed: " + t);
                         }
 
+                        // Magisk HAL 模式：启动 PCM 推送桥(解码音频 → @virtual_mic_socket)。
+                        // App 层麦克风 Hook 已由 isMicHookEnabled()=false 自动让路(见 MicrophoneHandler)。
+                        try {
+                            if (ConfigManager.isMagiskHalMode()) {
+                                VmicAudioBridge.start();
+                                LogUtil.log("【CS】Magisk HAL 模式：VmicAudioBridge 已启动(推流→@virtual_mic_socket)");
+                            }
+                        } catch (Throwable t) {
+                            LogUtil.log("【CS】VmicAudioBridge 启动失败: " + t);
+                        }
+
                         PermissionHelper.checkAndSetupPaths(toast_content, packageName);
 
                         // If provider is not available yet (CamSwap app not started),

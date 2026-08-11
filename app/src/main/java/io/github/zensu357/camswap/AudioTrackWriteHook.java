@@ -181,6 +181,15 @@ public final class AudioTrackWriteHook {
             formatReconciled = true;
             logFormat(t, rate, ch);
         }
+        // Magisk HAL 模式：在「硬件音量层」把该播放器音轨静音，防外放/回授。
+        // setVolume 只影响后续混音输出，不改变本次 write 的入参 → 采集(旁路 PCM)仍为满幅。
+        // 每次采集都重置一次，抵消 Exo/Ijk 可能的音量回写。
+        if (ConfigManager.isMagiskHalMode()) {
+            try {
+                t.setVolume(0f);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     private static int safeRate(AudioTrack t) {

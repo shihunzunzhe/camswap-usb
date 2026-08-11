@@ -51,6 +51,13 @@ public class ConfigManager {
     public static final String MIC_MODE_VIDEO_SYNC = "video_sync";
     /** 仅推流音频：麦克风只输出直播推流(RTMP/网络流)的声音，屏蔽真实麦克风；未推流时静音。 */
     public static final String MIC_MODE_STREAM = "stream";
+    /**
+     * Magisk Virtual Audio HAL 模式：麦克风由 vendor HAL 层接管。开启后：
+     * ① App 层 AudioRecord/native 麦克风 Hook 全部让路(passthrough)，避免与底层 HAL 双重注入；
+     * ② 扬声器强制静音(硬件音量层)，防外放/声学回授；
+     * ③ 解码后的 PCM 直推 {@code @virtual_mic_socket} 交给 HAL。
+     */
+    public static final String KEY_USE_MAGISK_HAL = "use_magisk_hal";
     public static final String REPLACE_MODE_VIDEO = "video";
     public static final String REPLACE_MODE_IMAGE = "image";
     public static final String KEY_VIDEO_ROTATION_OFFSET = "video_rotation_offset"; // 视频旋转偏移角度
@@ -93,6 +100,16 @@ public class ConfigManager {
 
     // Fallback switch
     public static boolean ENABLE_LEGACY_FILE_ACCESS = true;
+
+    /** 是否启用 Magisk Virtual Audio HAL 模式(全局开关,供各 Hook/播放链路统一判定)。 */
+    public static boolean isMagiskHalMode() {
+        try {
+            return io.github.zensu357.camswap.utils.VideoManager.getConfig()
+                    .getBoolean(KEY_USE_MAGISK_HAL, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
 
     private final AtomicReference<JSONObject> configData = new AtomicReference<>(new JSONObject());
     private volatile long lastLoadedTime = 0;

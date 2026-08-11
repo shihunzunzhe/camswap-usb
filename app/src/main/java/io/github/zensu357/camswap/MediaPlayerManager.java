@@ -95,6 +95,12 @@ public final class MediaPlayerManager {
     private static float resolveStreamVolume() {
         try {
             ConfigManager cfg = VideoManager.getConfig();
+            // Magisk HAL 模式：软件音量保持满幅，确保 Exo(软件音量在 write 前生效)/Ijk 写给
+            // AudioTrack.write 的 PCM 是满幅的，供采集推到 @virtual_mic_socket；扬声器外放另由
+            // AudioTrackWriteHook 在「硬件音量层」setVolume(0) 静音，不影响已捕获的 write 参数。
+            if (ConfigManager.isMagiskHalMode()) {
+                return 1.0f;
+            }
             if (cfg.getBoolean(ConfigManager.KEY_PLAY_VIDEO_SOUND, false)) {
                 return 1.0f;
             }

@@ -60,6 +60,22 @@ public final class StreamPcmBuffer {
     private static final byte[] HOLD_TAIL = new byte[8192];
     private static int holdTailLen;
 
+    /**
+     * PCM 旁路监听：每次 {@link #write(byte[], int, int)} 写入(16-bit LE)时回调。
+     * 供 {@link VmicAudioBridge} 在 Magisk HAL 模式下把解码 PCM 转推 {@code @virtual_mic_socket}。
+     * 挂在这个唯一的汇聚点上即可覆盖 Ijk/Exo 等所有解码后端。
+     */
+    public interface PcmTap {
+        void onPcm16(byte[] data, int offset, int length, int sampleRate, int channels);
+    }
+
+    private static volatile PcmTap pcmTap;
+
+    /** 设置/清除 PCM 旁路监听(null 清除)。 */
+    public static void setTap(PcmTap tap) {
+        pcmTap = tap;
+    }
+
     private StreamPcmBuffer() {
     }
 
@@ -177,6 +193,8 @@ public final class StreamPcmBuffer {
         if (len <= 0) {
             return;
         }
+        int rateSnap;
+        int chSnap;
         synchronized (LOCK) {
             int remaining = len;
             int src = offset;
@@ -191,6 +209,16 @@ public final class StreamPcmBuffer {
             totalWritten += len;
             trimBacklog(); // 只保留最新音频：积压超限则丢历史、重同步到目标延迟
             maybeLog();
+            rateSnap = sampleRate;
+            chSnap = channels;
+        }
+        // PCM 旁路(锁外调用，避免占用写锁)：Magisk HAL 模式下转推 @virtual_mic_socket。
+        PcmTap t = pcmTap;
+        if (t != null) {
+            try {
+                t.onPcm16(data, offset, len, rateSnap, chSnap);
+            } catch (Throwable ignored) {
+            }
         }
     }
 

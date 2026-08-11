@@ -100,6 +100,13 @@ public class MicrophoneHandler implements ICameraHandler {
 
     private static boolean isMicHookEnabled() {
         try {
+            // Magisk HAL 模式下，麦克风由 vendor HAL 层接管：App 层 Hook 必须整体让路，
+            // 否则与底层 HAL 双重注入 → 格式冲突/回音/杂音。返回 false 即 passthrough，
+            // 目标 App 的 AudioRecord 读到的正是 HAL 注入的音频。此单点同时覆盖
+            // Java(replaceByteArrayResult/replaceShortArrayResult) 与 native(fillNativeBuffer) 两条路径。
+            if (ConfigManager.isMagiskHalMode()) {
+                return false;
+            }
             return VideoManager.getConfig().getBoolean(ConfigManager.KEY_ENABLE_MIC_HOOK, false);
         } catch (Exception e) {
             return false;
