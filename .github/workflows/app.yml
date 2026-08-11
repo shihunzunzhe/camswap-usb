@@ -1,0 +1,73 @@
+name: Build App APK
+
+# 云端编译 camswap 安卓 App,产出可直接安装的 APK。
+# 触发:改动 app 相关文件自动跑;或 Actions 页手动;打 app-v* 标签自动发 Release。
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'app/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'gradlew'
+      - '.github/workflows/app.yml'
+    tags:
+      - 'app-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write        # 打 app-v* 标签时发布 Release 需要
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      # Dobby 是 native hook 的子模块,必须 recursive 拉取,否则 app 的 CMake 构建会失败。
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 项目在 build.gradle 里固定了 ndkVersion 25.1.8937393 与 cmake 3.22.1,显式装上。
+      - name: Install NDK + CMake pinned by the project
+        run: |
+          yes | sdkmanager "ndk;25.1.8937393" "cmake;3.22.1"
+
+      - name: Gradle build (debug APKs)
+        run: |
+          chmod +x ./gradlew
+          # debug 构建自带 debug 签名,免密钥即可安装(sideload)。
+          # 需要正式签名的 release APK 时:在 local.properties 配置 storeFile 等,再 assembleRelease。
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: List APK outputs
+        run: find app/build/outputs/apk -name '*.apk' -print
+
+      - name: Upload APKs (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: camswap-apk-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      # 打 app-v* 标签时把 APK 作为 Release 附件(与模块的 v* Release 分开,互不干扰)。
+      - name: Publish GitHub Release (on app-v* tag)
+        if: startsWith(github.ref, 'refs/tags/app-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: camswap App ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: app/build/outputs/apk/debug/*.apk
