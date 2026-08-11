@@ -30,6 +30,7 @@ data class MainUiState(
     val enableRandomPlay: Boolean = false,
     val enableMicHook: Boolean = false,
     val micHookMode: String = "mute",
+    val useMagiskHal: Boolean = false,
     val enablePhotoFake: Boolean = false,
 
     val notificationControlEnabled: Boolean = false,
@@ -86,6 +87,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     enableRandomPlay = configManager.getBoolean(ConfigManager.KEY_ENABLE_RANDOM_PLAY, false),
                     enableMicHook = configManager.getBoolean(ConfigManager.KEY_ENABLE_MIC_HOOK, false),
                     micHookMode = configManager.getString(ConfigManager.KEY_MIC_HOOK_MODE, ConfigManager.MIC_MODE_MUTE),
+                    useMagiskHal = configManager.getBoolean(ConfigManager.KEY_USE_MAGISK_HAL, false),
                     enablePhotoFake = configManager.getBoolean(ConfigManager.KEY_ENABLE_PHOTO_FAKE, false),
                     notificationControlEnabled = configManager.getBoolean(ConfigManager.KEY_NOTIFICATION_CONTROL_ENABLED, false),
                     overlayControlEnabled = configManager.getBoolean(ConfigManager.KEY_OVERLAY_CONTROL_ENABLED, false),
@@ -150,6 +152,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             configManager.setBoolean(ConfigManager.KEY_ENABLE_MIC_HOOK, enabled)
             _uiState.update { it.copy(enableMicHook = enabled) }
+        }
+    }
+
+    fun setUseMagiskHal(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            configManager.setBoolean(ConfigManager.KEY_USE_MAGISK_HAL, enabled)
+            _uiState.update { it.copy(useMagiskHal = enabled) }
         }
     }
 

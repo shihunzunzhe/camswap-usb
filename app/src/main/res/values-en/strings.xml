@@ -62,6 +62,8 @@
     <string name="settings_play_sound">Play Sound</string>
     <string name="settings_play_sound_desc">Play original audio when replacing</string>
     <string name="settings_mic_hook">Microphone Hook</string>
+    <string name="settings_magisk_hal">Magisk HAL Microphone</string>
+    <string name="settings_magisk_hal_desc">Let the low-level Magisk audio HAL take over the mic: disables the app-level mic hook, mutes the speaker, and injects decoded audio via @virtual_mic_socket. Requires the Virtual Mic HAL module flashed and a reboot.</string>
     <string name="settings_mic_hook_desc">Hook mic input to replace or mute audio</string>
     <string name="mic_mode_mute">Mute Mode</string>
     <string name="mic_mode_mute_desc">Output silent data, no sound heard</string>

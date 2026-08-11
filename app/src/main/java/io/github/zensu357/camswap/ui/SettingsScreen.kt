@@ -147,6 +147,18 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
             SettingsDivider()
 
+            // Magisk HAL 麦克风模式：开启后由底层 vendor HAL 接管麦克风，App 层 Hook 让路、
+            // 扬声器静音，解码音频经 @virtual_mic_socket 注入。需已刷入 Virtual Mic HAL 模块。
+            SettingsSwitchRow(
+                    icon = Icons.Default.Mic,
+                    title = stringResource(R.string.settings_magisk_hal),
+                    subtitle = stringResource(R.string.settings_magisk_hal_desc),
+                    checked = uiState.useMagiskHal,
+                    onCheckedChange = { viewModel.setUseMagiskHal(it) }
+            )
+
+            SettingsDivider()
+
             SettingsSwitchRow(
                     icon = Icons.Default.Mic,
                     title = stringResource(R.string.settings_mic_hook),

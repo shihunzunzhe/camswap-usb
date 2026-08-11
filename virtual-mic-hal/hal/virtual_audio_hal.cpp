@@ -28,6 +28,7 @@
 #include <string>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 #include "virtual_audio_hal.h"
 #include "vmic_audio_util.h"
@@ -75,40 +76,74 @@ static std::mutex g_streams_mtx;
 static std::unordered_map<audio_stream_in*, ssize_t (*)(audio_stream_in*, void*, size_t)>
         g_orig_reads;
 
+// 读系统属性:Android 走 __system_property_get;host 离线构建返回空串(便于编译/测试)。
+#if defined(__ANDROID__)
+#include <sys/system_properties.h>
+static std::string vmic_get_prop(const char* key) {
+    char v[PROP_VALUE_MAX] = {0};
+    if (__system_property_get(key, v) > 0 && v[0] != '\0') return std::string(v);
+    return std::string();
+}
+#else
+static std::string vmic_get_prop(const char*) { return std::string(); }
+#endif
+
 // ---------------------------------------------------------------------------
-//  加载真实(原厂)HAL：dlopen 与自身同目录的 *.orig.so 备份
+//  加载真实(原厂)HAL —— 依次尝试多个候选 .orig.so 备份,直到 dlopen + dlsym(HMI) 成功:
+//    (1) dladdr 推导代理自身路径 → 同目录 *.orig.so(Magisk 正确覆盖时最精确);
+//    (2) 依据 ro.board.platform / ro.hardware 动态拼接
+//        /vendor/lib(64)/hw/audio.primary.<plat>.orig.so。
+//  与 customize.sh 的备份命名(audio.primary.<soc>.orig.so)严格一致;绝不硬编码 default。
+//  例:高通 lito 机型 → /vendor/lib64/hw/audio.primary.lito.orig.so。
 // ---------------------------------------------------------------------------
 static audio_module* load_real_module() {
     static audio_module* s_real = nullptr;
     static std::once_flag s_once;
     std::call_once(s_once, []() {
-        Dl_info info{};
-        if (dladdr(reinterpret_cast<void*>(&proxy_dev_open), &info) == 0 || !info.dli_fname) {
-            ALOGE("load_real_module: dladdr failed, cannot locate self path");
-            return;
-        }
-        std::string self = info.dli_fname;                 // /vendor/lib64/hw/audio.primary.<soc>.so
-        std::string orig = self;
-        auto pos = orig.rfind(".so");
-        if (pos == std::string::npos) {
-            ALOGE("load_real_module: self path has no .so suffix: %s", self.c_str());
-            return;
-        }
-        orig.replace(pos, 3, VMIC_REAL_HAL_SUFFIX);         // -> audio.primary.<soc>.orig.so
+        std::vector<std::string> candidates;
 
-        void* h = dlopen(orig.c_str(), RTLD_NOW | RTLD_LOCAL);
-        if (!h) {
-            ALOGE("load_real_module: dlopen real HAL failed: %s (%s)", orig.c_str(), dlerror());
+        // (1) dladdr 自身路径 → 同目录 .orig.so
+        Dl_info info{};
+        if (dladdr(reinterpret_cast<void*>(&proxy_dev_open), &info) != 0 && info.dli_fname) {
+            std::string self = info.dli_fname;
+            auto pos = self.rfind(".so");
+            if (pos != std::string::npos) {
+                std::string o = self;
+                o.replace(pos, 3, VMIC_REAL_HAL_SUFFIX);
+                candidates.push_back(o);
+            }
+        } else {
+            ALOGW("load_real_module: dladdr failed, fall back to prop-based paths");
+        }
+
+        // (2) ro.board.platform / ro.hardware 动态拼接(lib64 与 lib 都试)
+        const char* dirs[]  = { "/vendor/lib64/hw/", "/vendor/lib/hw/" };
+        const char* props[] = { "ro.board.platform", "ro.hardware" };
+        for (const char* prop : props) {
+            std::string plat = vmic_get_prop(prop);
+            if (plat.empty()) continue;
+            for (const char* dir : dirs) {
+                candidates.push_back(std::string(dir) + "audio.primary." + plat + VMIC_REAL_HAL_SUFFIX);
+            }
+        }
+
+        for (const std::string& path : candidates) {
+            void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+            if (!h) {
+                ALOGW("load_real_module: dlopen fail %s (%s)", path.c_str(), dlerror());
+                continue;
+            }
+            auto* m = reinterpret_cast<audio_module*>(dlsym(h, HAL_MODULE_INFO_SYM_AS_STR));
+            if (!m) {
+                ALOGW("load_real_module: no %s in %s", HAL_MODULE_INFO_SYM_AS_STR, path.c_str());
+                dlclose(h);
+                continue;
+            }
+            s_real = m;
+            ALOGI("load_real_module: real HAL loaded from %s", path.c_str());
             return;
         }
-        auto* m = reinterpret_cast<audio_module*>(dlsym(h, HAL_MODULE_INFO_SYM_AS_STR));
-        if (!m) {
-            ALOGE("load_real_module: dlsym(%s) failed in %s", HAL_MODULE_INFO_SYM_AS_STR, orig.c_str());
-            dlclose(h);
-            return;
-        }
-        s_real = m;
-        ALOGI("load_real_module: real HAL loaded from %s", orig.c_str());
+        ALOGE("load_real_module: all candidates failed, proxy cannot forward to real HAL");
     });
     return s_real;
 }
