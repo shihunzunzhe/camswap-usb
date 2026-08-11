@@ -131,8 +131,13 @@ S16 / FLOAT / 8-bit(无符号) / 32-bit / 8.24 / 24-bit-packed 输出，
 
 - **触发**：改动 `virtual-mic-hal/**` 自动跑；或在 GitHub 仓库 **Actions → Build Virtual Mic HAL →
   Run workflow** 手动一键触发。
-- **下载**：运行结束在该次 run 的 Artifacts 里下载 `VirtualMic_HAL-magisk`（即刷入包）与
+- **下载（日常）**：运行结束在该次 run 的 Artifacts 里下载 `VirtualMic_HAL-magisk`（即刷入包）与
   `vmic-sender-arm64`（客户端）。
+- **发版（固定下载链接）**：打 `v*` 标签即自动编译并创建 **GitHub Release**，把
+  `VirtualMic_HAL.zip`（+sha256）与客户端二进制作为 Release 附件：
+  ```bash
+  git tag v1.0.0 && git push origin v1.0.0
+  ```
 - 下载后按下方"刷入与验证"操作即可（zip 已就绪，跳过本地编译/打包）。
 
 > 若要本地手动编译打包，见下节。排障见 [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)，

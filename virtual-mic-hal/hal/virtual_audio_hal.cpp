@@ -282,12 +282,15 @@ static ssize_t proxy_read(audio_stream_in* stream, void* buffer, size_t bytes) {
 
 // ---------------------------------------------------------------------------
 //  HAL 模块入口符号(HMI)——AudioFlinger 通过 dlsym("HMI") 找到它
+//
+//  ⚠ 必须显式标记 default 可见性:编译带 -fvisibility=hidden,否则 HMI 会被隐藏,
+//  导致 dlsym("HMI") 失败(HAL 加载不了)。加了 default 后即"只导出这一个入口符号"。
 // ---------------------------------------------------------------------------
 static struct hw_module_methods_t g_module_methods = {
     .open = proxy_dev_open,
 };
 
-extern "C" struct audio_module HAL_MODULE_INFO_SYM = {
+extern "C" __attribute__((visibility("default"))) struct audio_module HAL_MODULE_INFO_SYM = {
     .common = {
         .tag                = HARDWARE_MODULE_TAG,
         .module_api_version = AUDIO_MODULE_API_VERSION_0_1,
