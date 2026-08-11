@@ -1,0 +1,6 @@
+id=virtual_mic_hal
+name=Virtual Mic HAL (camswap)
+version=v1.0.0
+versionCode=1
+author=camswap
+description=系统级虚拟麦克风:vendor audio HAL 代理,屏蔽物理麦克风并注入 RTMP 音频(经 @virtual_mic_socket 收流+重采样+1x 控速)。安装后需重启。

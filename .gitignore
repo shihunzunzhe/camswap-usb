@@ -291,3 +291,6 @@ memory/MEMORY.md
 memory/project_overview.md
 .settings/org.eclipse.buildship.core.prefs
 ISSUES.md
+
+# 诊断日志(勿提交)
+cs_mic.log

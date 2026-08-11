@@ -1,0 +1,112 @@
+name: Build Virtual Mic HAL (Magisk zip)
+
+# 一键云端编译 + 打包:产出可直接刷入的 VirtualMic_HAL.zip 与客户端 vmic_sender。
+# 触发:改动 virtual-mic-hal/** 时自动;也可在 Actions 页手动 Run workflow。
+on:
+  push:
+    paths:
+      - 'virtual-mic-hal/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'virtual-mic-hal/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      MOD_DIR: virtual-mic-hal
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 固定 NDK 版本(r25c+),保证可复现。
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          add-to-path: true
+
+      - name: Toolchain info
+        run: |
+          echo "NDK: ${{ steps.setup-ndk.outputs.ndk-path }}"
+          cmake --version | head -1
+          readelf --version | head -1
+          zip -v | head -2 || true
+
+      # ---- 1) 编译代理 HAL(arm64-v8a)。产物即部署用的 audio.primary.<soc>.so ----
+      #     统一构建名 audio.primary.vmicproxy.so,安装时 customize.sh 按机型改名。
+      - name: Build proxy HAL (arm64-v8a)
+        env:
+          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          cmake -B build/hal-arm64 -S "$MOD_DIR/hal" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DVMIC_SOC=vmicproxy
+          cmake --build build/hal-arm64 -j"$(nproc)"
+          SO=build/hal-arm64/audio.primary.vmicproxy.so
+          echo "== HAL output =="; ls -la "$SO"
+          echo "== ELF header =="; readelf -h "$SO" | grep -E 'Class|Machine'
+          echo "== verify AArch64 + HMI export =="
+          readelf -h "$SO" | grep -q 'AArch64' || { echo "NOT AArch64!"; exit 1; }
+          nm -D "$SO" | grep -w HMI || { echo "HMI symbol missing!"; exit 1; }
+
+      # ---- 2) 编译推流客户端(arm64-v8a):libvmicsender.so + CLI vmic_sender_demo ----
+      - name: Build sender client (arm64-v8a)
+        env:
+          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          cd "$MOD_DIR/sender/native"
+          "$NDK/ndk-build" \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=./Android.mk \
+            NDK_APPLICATION_MK=./Application.mk \
+            APP_ABI=arm64-v8a \
+            NDK_LIBS_OUT=./libs \
+            NDK_OUT=./obj \
+            -j"$(nproc)"
+          echo "== sender outputs =="; ls -la libs/arm64-v8a
+
+      # ---- 3) 组装 Magisk 模块 zip(正确目录结构 + 可执行 update-binary) ----
+      - name: Assemble Magisk module (VirtualMic_HAL.zip)
+        run: |
+          set -euo pipefail
+          STAGE=stage
+          rm -rf "$STAGE"
+          cp -r "$MOD_DIR/magisk-module" "$STAGE"
+          mkdir -p "$STAGE/prebuilt/arm64"
+          cp build/hal-arm64/audio.primary.vmicproxy.so "$STAGE/prebuilt/arm64/audio.primary.vmicproxy.so"
+          # 去掉占位文件;保留 update-binary 可执行位。
+          find "$STAGE" -name '.gitkeep' -delete
+          chmod +x "$STAGE/META-INF/com/google/android/update-binary"
+          ( cd "$STAGE" && zip -r9 ../VirtualMic_HAL.zip . -x '.git*' )
+          echo "== zip contents =="; unzip -l VirtualMic_HAL.zip
+          sha256sum VirtualMic_HAL.zip | tee VirtualMic_HAL.zip.sha256
+
+      # ---- 4) 发布产物:Magisk zip + 客户端二进制 ----
+      - name: Upload Magisk module zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: VirtualMic_HAL-magisk
+          path: |
+            VirtualMic_HAL.zip
+            VirtualMic_HAL.zip.sha256
+          if-no-files-found: error
+
+      - name: Upload sender client (arm64-v8a)
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmic-sender-arm64
+          path: |
+            ${{ env.MOD_DIR }}/sender/native/libs/arm64-v8a/vmic_sender_demo
+            ${{ env.MOD_DIR }}/sender/native/libs/arm64-v8a/libvmicsender.so
+          if-no-files-found: warn

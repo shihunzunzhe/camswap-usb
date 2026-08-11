@@ -1,0 +1,25 @@
+# ============================================================================
+#  sepolicy.rule —— Virtual Mic HAL 的 SELinux 放行(Magisk 开机用 magiskpolicy 注入)
+#
+#  数据流:HAL 进程内起抽象 UDS 服务端(收流);推流 App 作为客户端 connectto。
+#  故需:① 服务端域可 create/bind/listen/accept UDS;② 客户端域可 connectto。
+#
+#  说明:legacy audio.primary.<soc>.so 视机型/配置由不同域加载——
+#    Treble passthrough 服务通常为 hal_audio_default;非 Treble/直通模式为 audioserver。
+#    两者都放行,以覆盖不同设备。magiskpolicy 注入不受源码 neverallow 约束。
+# ============================================================================
+
+# ---- 服务端:HAL 进程创建/监听/收发 UDS ----
+allow hal_audio_default hal_audio_default unix_stream_socket { create bind listen accept read write shutdown getopt setopt getattr }
+allow audioserver audioserver unix_stream_socket { create bind listen accept read write shutdown getopt setopt getattr }
+
+# ---- 客户端:推流 App 连接到 HAL 的抽象 UDS ----
+# 目标 App(微信/LiteAV)与本项目推流端一般为 untrusted_app;系统签名 App 用 platform_app。
+allow untrusted_app hal_audio_default unix_stream_socket connectto
+allow untrusted_app audioserver      unix_stream_socket connectto
+allow platform_app  hal_audio_default unix_stream_socket connectto
+allow platform_app  audioserver      unix_stream_socket connectto
+
+# 若推流端运行在其它/带版本号的 app 域(如 untrusted_app_3x),按需补:
+#   allow <your_app_domain> hal_audio_default unix_stream_socket connectto
+#   allow <your_app_domain> audioserver      unix_stream_socket connectto
